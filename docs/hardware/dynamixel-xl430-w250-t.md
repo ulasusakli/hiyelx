@@ -112,10 +112,6 @@ path again attempts zero velocity, transport cleanup, torque disable, and port
 closure. After completion, verify torque is disabled by confirming the unloaded
 actuator can be moved freely, then remove motor power.
 
-### Acceptance records
-
-- [2026-10-05 preflight — blocked before hardware access](acceptance/2026-10-05-xl430-w250-t-preflight.md)
-
 ## Troubleshooting
 
 - Port cannot open: verify the external device path, OS permissions, USB cable,
