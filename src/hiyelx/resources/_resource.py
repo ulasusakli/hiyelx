@@ -75,6 +75,25 @@ class ResourceHealth:
     detail: str | None = None
 
 
+class ResourceFaultKind(Enum):
+    """Typed fault categories with stable vendor-neutral health wording."""
+
+    DEADLINE = "deadline"
+    BACKEND_UNAVAILABLE = "backend_unavailable"
+    SAFE_STOP = "safe_stop"
+    LIFECYCLE_CLEANUP = "lifecycle_cleanup"
+
+
+class ResourceOperation(Enum):
+    """Fixed operation names allowed in locally displayable health summaries."""
+
+    STARTUP = "startup"
+    SHUTDOWN = "shutdown"
+    MOTOR_COMMAND = "motor command"
+    MOTOR_STATE_READ = "motor state read"
+    SAFE_STOP = "safe-stop"
+
+
 LIFECYCLE_TRANSITIONS: Final[Mapping[LifecycleState, frozenset[LifecycleState]]] = (
     MappingProxyType(
         {
@@ -186,7 +205,7 @@ class Resource:
                 lifecycle_state=self.state,
             )
         except Exception as error:
-            self._record_reliability_failure(error, "startup")
+            self._record_reliability_failure(error, ResourceOperation.STARTUP)
             self._transition_to(LifecycleState.FAILED)
             raise ResourceStartupError(self.identity) from error
         self._transition_to(LifecycleState.RUNNING)
@@ -206,7 +225,12 @@ class Resource:
                 lifecycle_state=self.state,
             )
         except Exception as error:
-            self._record_reliability_failure(error, "shutdown")
+            self._record_reliability_failure(error, ResourceOperation.SHUTDOWN)
+            if self.health.status is not HealthStatus.UNHEALTHY:
+                self.record_fault(
+                    ResourceFaultKind.LIFECYCLE_CLEANUP,
+                    ResourceOperation.SHUTDOWN,
+                )
             self._transition_to(LifecycleState.FAILED)
             raise ResourceShutdownError(self.identity) from error
         self._transition_to(LifecycleState.STOPPED)
@@ -227,11 +251,32 @@ class Resource:
             raise InvalidLifecycleTransition(self.identity, self.state, target_state)
         self._state = target_state
 
-    def _record_reliability_failure(self, error: Exception, operation: str) -> None:
+    def _record_reliability_failure(
+        self,
+        error: Exception,
+        operation: ResourceOperation,
+    ) -> None:
         if isinstance(error, OperationDeadlineExceeded):
-            detail = f"deadline exceeded during {operation}"
+            self.record_fault(ResourceFaultKind.DEADLINE, operation)
         elif isinstance(error, BackendUnavailableError):
-            detail = f"backend unavailable during {operation}"
-        else:
-            return
-        self._set_health(ResourceHealth(HealthStatus.UNHEALTHY, detail))
+            self.record_fault(ResourceFaultKind.BACKEND_UNAVAILABLE, operation)
+
+    @final
+    def record_fault(
+        self,
+        kind: ResourceFaultKind,
+        operation: ResourceOperation,
+    ) -> None:
+        """Publish a sanitized unhealthy snapshot for a typed local fault."""
+        summaries = {
+            ResourceFaultKind.DEADLINE: "deadline exceeded",
+            ResourceFaultKind.BACKEND_UNAVAILABLE: "backend unavailable",
+            ResourceFaultKind.SAFE_STOP: "safe-stop failed",
+            ResourceFaultKind.LIFECYCLE_CLEANUP: "lifecycle cleanup failed",
+        }
+        self._set_health(
+            ResourceHealth(
+                HealthStatus.UNHEALTHY,
+                f"{summaries[kind]} during {operation.value}",
+            )
+        )

@@ -16,11 +16,10 @@ DEFERRED without treating it as complete:
 
 ### NOW
 
-**RB-2 Safe-Stop + Health + Local Structured Events**
+**Developer Experience + Repeatable SIM Demo**
 
-Build on RB-1 with bounded safe-stop orchestration, complete health propagation,
-and local structured lifecycle and fault events. Do not broaden this into
-remote telemetry, automatic recovery, or a general scheduling system.
+Package the existing runtime contracts into one documented, repeatable local
+simulation workflow that a developer can run and inspect without hardware.
 
 ### NEXT
 
@@ -53,6 +52,11 @@ deferred physical hardware gate are complete.
   per-resource deadline policy, typed timeout/backend failures, safe health
   summaries, serialized late blocking-call completion, and stable gRPC status
   mapping.
+- RB-2 Safe-Stop + Health + Local Structured Events established with ordered
+  best-effort motor stop, typed cleanup outcomes, vendor-neutral health
+  degradation, and deterministic instance-local records.
+- Reliability Baseline established across RB-1 and RB-2 without adding remote
+  telemetry, automatic recovery, or hardware acceptance claims.
 
 ### DEFERRED
 
@@ -63,8 +67,8 @@ documented opt-in bench acceptance on model 1060 over Protocol 2.0 at 57,600
 baud. No physical acceptance was performed for RB-1. The Real Reference Driver
 milestone is not closed until that external evidence exists.
 
-The full Reliability Baseline and PRE-SEED milestone are also not complete;
-RB-2 and subsequent bounded reliability work remain outstanding.
+The PRE-SEED milestone remains incomplete until the repeatable demo and the
+separately evidenced physical hardware gate are complete.
 
 ## Minimum quality gate
 

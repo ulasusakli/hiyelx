@@ -38,3 +38,8 @@ its existing startup, rollback, and shutdown error contracts. Manager-level
 retry, recovery, parallel startup, scheduling, signal handling, and background
 work remain deferred. Runtime ownership does not add networking, cloud
 coordination, dependency injection, or dynamic model discovery.
+
+RB-2 adds the separate best-effort `safe_stop()` operation documented in
+`reliability-rb2.md`. It commands already-started motors to zero velocity in
+reverse successful-start order without changing lifecycle state or replacing
+normal shutdown.

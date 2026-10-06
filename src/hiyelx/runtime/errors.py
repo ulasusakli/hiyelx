@@ -123,6 +123,27 @@ class ShutdownFailure:
     error: Exception
 
 
+@dataclass(frozen=True, slots=True)
+class SafeStopOutcome:
+    """Ordered immutable result of one attempted motor stop."""
+
+    identity: ResourceIdentity
+    succeeded: bool
+    error: Exception | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SafeStopReport:
+    """Immutable report cached after the first safe-stop execution."""
+
+    outcomes: tuple[SafeStopOutcome, ...]
+
+    @property
+    def failures(self) -> tuple[SafeStopOutcome, ...]:
+        """Return failed outcomes without losing attempt order."""
+        return tuple(outcome for outcome in self.outcomes if not outcome.succeeded)
+
+
 class RuntimeStartupError(RuntimeManagerError):
     """Raised after startup fails and rollback has been fully attempted."""
 
@@ -144,3 +165,18 @@ class RuntimeShutdownError(RuntimeManagerError):
     def __init__(self, failures: tuple[ShutdownFailure, ...]) -> None:
         self.failures = failures
         super().__init__(f"runtime shutdown completed with {len(failures)} failure(s)")
+
+
+class RuntimeSafeStopError(RuntimeManagerError):
+    """Raised after every eligible motor received a safe-stop attempt."""
+
+    def __init__(
+        self,
+        report: SafeStopReport,
+        primary_failure: Exception | None = None,
+    ) -> None:
+        self.report = report
+        self.primary_failure = primary_failure
+        super().__init__(
+            f"runtime safe-stop completed with {len(report.failures)} failure(s)"
+        )

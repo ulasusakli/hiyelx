@@ -3,6 +3,7 @@ import pytest
 from hiyelx.config import ResourceDefinition, RuntimeConfig
 from hiyelx.models import ModelRegistry
 from hiyelx.resources import (
+    HealthStatus,
     LifecycleState,
     Resource,
     ResourceIdentity,
@@ -117,6 +118,10 @@ async def test_shutdown_continues_and_reports_every_failure_in_order() -> None:
     assert resources["b"].state is LifecycleState.STOPPED
     assert resources["a"].state is LifecycleState.FAILED
     assert resources["c"].state is LifecycleState.FAILED
+    assert resources["a"].health.status is HealthStatus.UNHEALTHY
+    assert resources["a"].health.detail == "lifecycle cleanup failed during shutdown"
+    assert resources["c"].health.status is HealthStatus.UNHEALTHY
+    assert resources["c"].health.detail == "lifecycle cleanup failed during shutdown"
 
 
 @pytest.mark.asyncio

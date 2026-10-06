@@ -17,6 +17,7 @@ from hiyelx.resources import (
     LifecycleState,
     Resource,
     ResourceIdentity,
+    ResourceOperation,
 )
 from hiyelx.resources.reliability import await_with_deadline
 
@@ -113,7 +114,7 @@ class Motor(Resource, ABC):
                 lifecycle_state=self.state,
             )
         except Exception as error:
-            self._record_reliability_failure(error, "motor command")
+            self._record_reliability_failure(error, ResourceOperation.MOTOR_COMMAND)
             raise
 
     @final
@@ -128,7 +129,7 @@ class Motor(Resource, ABC):
                 lifecycle_state=self.state,
             )
         except Exception as error:
-            self._record_reliability_failure(error, "motor state read")
+            self._record_reliability_failure(error, ResourceOperation.MOTOR_STATE_READ)
             raise
 
     @final

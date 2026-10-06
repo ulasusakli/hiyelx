@@ -3,19 +3,31 @@
 from collections.abc import Mapping
 from types import MappingProxyType
 
+from hiyelx.components import Motor
 from hiyelx.config import RuntimeConfig
 from hiyelx.models import ModelRegistry
-from hiyelx.resources import Resource, ResourceIdentity
+from hiyelx.resources import (
+    HealthStatus,
+    LifecycleState,
+    Resource,
+    ResourceFaultKind,
+    ResourceIdentity,
+    ResourceOperation,
+)
 from hiyelx.runtime.errors import (
     InvalidRuntimeManagerStateError,
     ResourceIdentityMismatchError,
     RollbackFailure,
     RuntimeConstructionError,
+    RuntimeSafeStopError,
     RuntimeShutdownError,
     RuntimeStartupError,
+    SafeStopOutcome,
+    SafeStopReport,
     ShutdownFailure,
     UnknownOwnedResourceError,
 )
+from hiyelx.runtime.events import RuntimeEvent, RuntimeEventOutcome, RuntimeEventSink
 from hiyelx.runtime.planning import plan_startup
 from hiyelx.runtime.state import RuntimeManagerOperation, RuntimeManagerState
 
@@ -23,7 +35,13 @@ from hiyelx.runtime.state import RuntimeManagerOperation, RuntimeManagerState
 class RuntimeManager:
     """Single-use owner of configured local resources."""
 
-    def __init__(self, config: RuntimeConfig, registry: ModelRegistry) -> None:
+    def __init__(
+        self,
+        config: RuntimeConfig,
+        registry: ModelRegistry,
+        *,
+        event_sink: RuntimeEventSink | None = None,
+    ) -> None:
         self._state = RuntimeManagerState.NEW
         self._startup_plan = plan_startup(config)
         definitions = {definition.identity: definition for definition in config.resources}
@@ -43,6 +61,9 @@ class RuntimeManager:
         self._owned_resources = MappingProxyType(resources.copy())
         self._successful_start_order: tuple[ResourceIdentity, ...] = ()
         self._active_started: tuple[ResourceIdentity, ...] = ()
+        self._event_sink = event_sink
+        self._event_sequence = 0
+        self._safe_stop_report: SafeStopReport | None = None
 
     @property
     def state(self) -> RuntimeManagerState:
@@ -115,6 +136,75 @@ class RuntimeManager:
             raise shutdown_error from failures[0].error
         self._state = RuntimeManagerState.STOPPED
 
+    async def safe_stop(
+        self,
+        *,
+        primary_failure: Exception | None = None,
+    ) -> SafeStopReport:
+        """Best-effort stop active motors once, preserving a triggering fault."""
+        self._require_state(RuntimeManagerOperation.SAFE_STOP, RuntimeManagerState.RUNNING)
+        self._emit(
+            operation="safe_stop",
+            outcome=RuntimeEventOutcome.REQUESTED,
+            summary="safe-stop requested",
+        )
+
+        if self._safe_stop_report is None:
+            outcomes: list[SafeStopOutcome] = []
+            for identity in reversed(self._successful_start_order):
+                resource = self._resources[identity]
+                if not isinstance(resource, Motor) or resource.state is not LifecycleState.RUNNING:
+                    continue
+                self._emit_resource(
+                    resource,
+                    operation="safe_stop",
+                    outcome=RuntimeEventOutcome.ATTEMPTED,
+                    summary="motor safe-stop attempted",
+                )
+                try:
+                    await resource.stop()
+                except Exception as error:
+                    resource.record_fault(
+                        ResourceFaultKind.SAFE_STOP,
+                        ResourceOperation.SAFE_STOP,
+                    )
+                    outcomes.append(SafeStopOutcome(identity, False, error))
+                    self._emit_resource(
+                        resource,
+                        operation="health_degradation",
+                        outcome=RuntimeEventOutcome.FAILED,
+                        summary="resource health degraded after safe-stop failure",
+                    )
+                    self._emit_resource(
+                        resource,
+                        operation="safe_stop",
+                        outcome=RuntimeEventOutcome.FAILED,
+                        summary="motor safe-stop failed",
+                    )
+                else:
+                    outcomes.append(SafeStopOutcome(identity, True))
+                    self._emit_resource(
+                        resource,
+                        operation="safe_stop",
+                        outcome=RuntimeEventOutcome.SUCCEEDED,
+                        summary="motor safe-stop succeeded",
+                    )
+            self._safe_stop_report = SafeStopReport(tuple(outcomes))
+
+        report = self._safe_stop_report
+        self._emit(
+            operation="safe_stop_cleanup",
+            outcome=RuntimeEventOutcome.COMPLETED,
+            summary="safe-stop cleanup completed",
+        )
+        if primary_failure is not None or report.failures:
+            safe_stop_error = RuntimeSafeStopError(report, primary_failure)
+            cause = primary_failure
+            if cause is None:
+                cause = report.failures[0].error
+            raise safe_stop_error from cause
+        return report
+
     async def _rollback(
         self,
         started: list[ResourceIdentity],
@@ -126,6 +216,47 @@ class RuntimeManager:
             except Exception as error:
                 failures.append(RollbackFailure(identity, error))
         return tuple(failures)
+
+    def _emit_resource(
+        self,
+        resource: Resource,
+        *,
+        operation: str,
+        outcome: RuntimeEventOutcome,
+        summary: str,
+    ) -> None:
+        self._emit(
+            operation=operation,
+            outcome=outcome,
+            summary=summary,
+            identity=resource.identity,
+            lifecycle_state=resource.state,
+            health_status=resource.health.status,
+        )
+
+    def _emit(
+        self,
+        *,
+        operation: str,
+        outcome: RuntimeEventOutcome,
+        summary: str,
+        identity: ResourceIdentity | None = None,
+        lifecycle_state: LifecycleState | None = None,
+        health_status: HealthStatus | None = None,
+    ) -> None:
+        if self._event_sink is None:
+            return
+        event = RuntimeEvent(
+            sequence=self._event_sequence,
+            operation=operation,
+            outcome=outcome,
+            summary=summary,
+            identity=identity,
+            lifecycle_state=lifecycle_state,
+            health_status=health_status,
+        )
+        self._event_sequence += 1
+        self._event_sink.record(event)
 
     def _require_state(
         self,

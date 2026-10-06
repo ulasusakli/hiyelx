@@ -19,3 +19,4 @@ class RuntimeManagerOperation(Enum):
 
     START = "start"
     SHUTDOWN = "shutdown"
+    SAFE_STOP = "safe_stop"
