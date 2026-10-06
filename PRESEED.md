@@ -10,40 +10,61 @@ behind the hardware abstraction layer (HAL), not in application code.
 
 ## Working model
 
-PRE-SEED optimizes for time-to-working-product. Work has only three states:
+PRE-SEED optimizes for time-to-working-product. Active capability work uses
+NOW, NEXT, and DONE. A separately evidenced external gate may be marked
+DEFERRED without treating it as complete:
 
 ### NOW
 
-**Foundation -> Resource Core**
+**RB-2 Safe-Stop + Health + Local Structured Events**
 
-Establish the smallest reliable Python foundation, then implement the Resource
-contract: identity, lifecycle, health, and deterministic failure behavior.
-
-Foundation exit criteria:
-
-- The `hiyelx` package imports on Python 3.12.
-- The local quality gate passes.
-- CI runs the same quality gate.
-- No cloud or hardware-vendor runtime dependency is introduced.
-
-Resource Core exit criteria:
-
-- A resource has a stable identity and explicit lifecycle states.
-- Lifecycle transitions and invalid transitions are deterministic.
-- Health can be inspected through a vendor-neutral contract.
-- Unit tests cover the public contract and failure paths.
+Build on RB-1 with bounded safe-stop orchestration, complete health propagation,
+and local structured lifecycle and fault events. Do not broaden this into
+remote telemetry, automatic recovery, or a general scheduling system.
 
 ### NEXT
 
 Move one bounded capability at a time through the milestone list below. The
-next capability after Resource Core is Motor API plus `SimulatedMotor`.
+PRE-SEED Demo remains the next product proof after reliability work and the
+deferred physical hardware gate are complete.
 
 ### DONE
 
 - Repository initialized.
 - PRE-SEED product boundary, technical thesis, and canonical stack documented.
 - Founder Mode workflow established.
-- Minimal Python Foundation established when the quality gate passes.
+- Canonical source baseline established and synchronized with GitHub on
+  2026-10-06.
+- Minimal Python Foundation established; the quality gate passes.
+- Resource Core established with stable identity, explicit deterministic
+  lifecycle transitions, inspectable vendor-neutral health, and tested failure
+  paths.
+- Motor API plus deterministic simulation established with vendor-neutral
+  commands and state, explicit simulated time, and lifecycle-guarded control.
+- Configuration plus Model Registry established with strict versioned local
+  documents, explicit instance-local registration, and lifecycle-free factory
+  creation.
+- Runtime Manager established with deterministic dependency planning, exclusive
+  local ownership, sequential startup, rollback, lookup, and reverse shutdown.
+- gRPC Boundary established with a versioned local Motor service, centralized
+  domain status mapping, loopback-only transport ownership, and a real async
+  client/server integration proof.
+- RB-1 Operation Deadlines + Fault Visibility established with immutable
+  per-resource deadline policy, typed timeout/backend failures, safe health
+  summaries, serialized late blocking-call completion, and stable gRPC status
+  mapping.
+
+### DEFERRED
+
+**Physical Hardware Proof**
+
+The fixed DYNAMIXEL XL430-W250-T driver implementation remains ready for its
+documented opt-in bench acceptance on model 1060 over Protocol 2.0 at 57,600
+baud. No physical acceptance was performed for RB-1. The Real Reference Driver
+milestone is not closed until that external evidence exists.
+
+The full Reliability Baseline and PRE-SEED milestone are also not complete;
+RB-2 and subsequent bounded reliability work remain outstanding.
 
 ## Minimum quality gate
 

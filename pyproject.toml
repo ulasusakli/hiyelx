@@ -8,10 +8,17 @@ version = "0.1.0"
 description = "Hardware-independent robotics runtime"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+  "dynamixel-sdk>=4.1,<5",
+  "grpcio>=1.75,<2",
+  "pydantic>=2,<3",
+  "protobuf>=6,<7",
+  "PyYAML>=6,<7",
+]
 
 [dependency-groups]
 dev = [
+  "grpcio-tools>=1.75,<2",
   "pyright",
   "pytest",
   "pytest-asyncio",
@@ -28,12 +35,20 @@ line-length = 100
 [tool.ruff.lint]
 select = ["ASYNC", "B", "E", "F", "I", "SIM", "UP"]
 
+[tool.ruff.lint.per-file-ignores]
+"src/hiyelx/rpc/generated/*" = ["ALL"]
+
 [tool.pyright]
 include = ["src", "tests"]
+ignore = ["src/hiyelx/rpc/generated"]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
 
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers -ra"
 asyncio_mode = "auto"
+pythonpath = ["."]
+markers = [
+  "hardware: opt-in tests requiring the physical XL430 reference kit",
+]
 testpaths = ["tests"]

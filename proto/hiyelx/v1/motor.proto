@@ -1,0 +1,65 @@
+syntax = "proto3";
+
+package hiyelx.v1;
+
+// Stable wire representation of the existing resource lifecycle.
+enum ResourceLifecycleState {
+  RESOURCE_LIFECYCLE_STATE_UNSPECIFIED = 0;
+  RESOURCE_LIFECYCLE_STATE_CREATED = 1;
+  RESOURCE_LIFECYCLE_STATE_STARTING = 2;
+  RESOURCE_LIFECYCLE_STATE_RUNNING = 3;
+  RESOURCE_LIFECYCLE_STATE_STOPPING = 4;
+  RESOURCE_LIFECYCLE_STATE_STOPPED = 5;
+  RESOURCE_LIFECYCLE_STATE_FAILED = 6;
+}
+
+message MotorSummary {
+  string identity = 1;
+  ResourceLifecycleState lifecycle_state = 2;
+}
+
+message MotorState {
+  string identity = 1;
+  double angular_position_radians = 2;
+  double angular_velocity_radians_per_second = 3;
+  ResourceLifecycleState lifecycle_state = 4;
+}
+
+message ListMotorsRequest {}
+
+message ListMotorsResponse {
+  repeated MotorSummary motors = 1;
+}
+
+message GetMotorStateRequest {
+  string identity = 1;
+}
+
+message GetMotorStateResponse {
+  MotorState state = 1;
+}
+
+message ApplyMotorCommandRequest {
+  string identity = 1;
+  double angular_velocity_radians_per_second = 2;
+}
+
+message ApplyMotorCommandResponse {
+  MotorState state = 1;
+}
+
+message StopMotorRequest {
+  string identity = 1;
+}
+
+message StopMotorResponse {
+  MotorState state = 1;
+}
+
+service MotorService {
+  rpc ListMotors(ListMotorsRequest) returns (ListMotorsResponse);
+  rpc GetMotorState(GetMotorStateRequest) returns (GetMotorStateResponse);
+  rpc ApplyMotorCommand(ApplyMotorCommandRequest)
+      returns (ApplyMotorCommandResponse);
+  rpc StopMotor(StopMotorRequest) returns (StopMotorResponse);
+}
