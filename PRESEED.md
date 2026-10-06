@@ -8,6 +8,13 @@ HIYELX must expose stable application-level resource APIs that behave the same
 against deterministic simulation and real hardware. Hardware selection belongs
 behind the hardware abstraction layer (HAL), not in application code.
 
+## Canonical master plan
+
+The maintained program plan is
+`docs/plans/HIYELX_PRESEED_Master_Plan_v3.0.docx`. It is the scheduling,
+decision-gate, testing, and launch-readiness companion to this operational
+NOW/NEXT/DONE file. Version 3.0 supersedes the prior standalone plan.
+
 ## Working model
 
 PRE-SEED optimizes for time-to-working-product. Active capability work uses
@@ -34,6 +41,8 @@ deferred physical hardware gate are complete.
 - Founder Mode workflow established.
 - Canonical source baseline established and synchronized with GitHub on
   2026-10-06.
+- Canonical workspace consolidated under `hiyelx`; PRE-SEED Master Plan v3.0
+  established as the active program plan.
 - Minimal Python Foundation established; the quality gate passes.
 - Resource Core established with stable identity, explicit deterministic
   lifecycle transitions, inspectable vendor-neutral health, and tested failure
