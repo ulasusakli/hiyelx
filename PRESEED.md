@@ -23,10 +23,11 @@ DEFERRED without treating it as complete:
 
 ### NOW
 
-**Developer Experience + Repeatable SIM Demo**
+**PRE-SEED Demo Readiness**
 
-Package the existing runtime contracts into one documented, repeatable local
-simulation workflow that a developer can run and inspect without hardware.
+Use the repeatable local simulation workflow as the software evidence baseline
+for the PRE-SEED Demo. Keep the separate physical hardware proof deferred until
+the documented bench gate can be executed and recorded.
 
 ### NEXT
 
@@ -66,6 +67,9 @@ deferred physical hardware gate are complete.
   degradation, and deterministic instance-local records.
 - Reliability Baseline established across RB-1 and RB-2 without adding remote
   telemetry, automatic recovery, or hardware acceptance claims.
+- DX-1 Developer Experience + Repeatable SIM Demo established with an
+  installable CLI, canonical configuration validation, deterministic explicit
+  simulation time, generated-client loopback gRPC control, and verified cleanup.
 
 ### DEFERRED
 

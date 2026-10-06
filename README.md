@@ -12,6 +12,47 @@ The current objective is to prove the core technical thesis:
 
 The same application-level API should run against deterministic simulation and at least one real hardware driver, with hardware selection resolved through configuration and the model registry.
 
+## Local simulation quickstart
+
+Install the locked development environment, validate the canonical demo
+configuration, and run the hardware-free loopback workflow:
+
+```bash
+uv sync --all-groups
+uv run hiyelx validate-config examples/configs/sim-motor.yaml
+uv run hiyelx demo sim-motor
+```
+
+Expected validation output:
+
+```text
+configuration=valid
+```
+
+Expected deterministic demo output:
+
+```text
+demo=sim-motor
+configuration=valid
+runtime=running
+grpc=running
+motors=sim_motor
+command=positive velocity=2.000
+advance=1.250
+state=positive position=2.500 velocity=2.000
+command=negative velocity=-1.000
+advance=0.500
+state=negative position=2.000 velocity=-1.000
+command=zero velocity=0.000
+stop velocity=0.000
+cleanup grpc=stopped runtime=stopped
+```
+
+The CLI uses the generated Motor gRPC client over an ephemeral IPv4 loopback
+port. Simulation time advances explicitly inside the owned `SimulatedMotor`;
+there is no simulation-control RPC, wall-clock stepping, hardware access, or
+cloud dependency.
+
 ## Pre-seed scope
 
 - Resource / Component / Service model

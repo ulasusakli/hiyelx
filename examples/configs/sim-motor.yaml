@@ -1,0 +1,5 @@
+schema_version: "1"
+resources:
+  - identity: sim_motor
+    model: motor.simulated
+    settings: {}
