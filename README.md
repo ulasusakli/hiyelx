@@ -44,6 +44,8 @@ for the complete evidence contract and troubleshooting boundary.
 External participants should receive the repository URL and the
 [`External Developer Dry Run`](docs/development/external-developer-dry-run.md)
 runbook. Its evidence template is intentionally blank until an actual session.
+The founder-accepted PRE-SEED result is recorded in the
+[`2026-10-08 external dry-run evidence`](docs/evidence/2026-10-08-external-developer-dry-run.md).
 
 The CLI uses the generated Motor gRPC client over an ephemeral IPv4 loopback
 port. Simulation time advances explicitly inside the owned `SimulatedMotor`;

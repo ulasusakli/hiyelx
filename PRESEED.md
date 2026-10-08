@@ -23,17 +23,17 @@ DEFERRED without treating it as complete:
 
 ### NOW
 
-**External Developer Dry Run**
+**Software Preview Release Candidate**
 
-Have a developer outside the implementation loop follow only the documented
-clean-install and SIM demo path, then record bounded usability findings without
-expanding runtime scope. Physical hardware proof remains separately deferred.
+Assemble the versioned software evidence index, release notes, known
+limitations, license decision, and founder sign-off required for a bounded
+Software Developer Preview. Do not add runtime, cloud, or hardware capability.
 
 ### NEXT
 
-Move one bounded capability at a time through the milestone list below. The
-PRE-SEED Demo remains the next product proof after reliability work and the
-deferred physical hardware gate are complete.
+Close the Software Preview Release Candidate before opening the Software
+Developer Preview. Physical Hardware Proof remains a separate deferred gate and
+is still required before the full PRE-SEED milestone can close.
 
 ### DONE
 
@@ -73,6 +73,10 @@ deferred physical hardware gate are complete.
 - DR-1 Clean Install + Demo Evidence established with a canonical transcript,
   isolated non-editable wheel installation, source-import rejection, fresh
   Python 3.12 execution, and a bounded CI packaging smoke gate.
+- EDR-1 External Developer Dry Run accepted by the founder on 2026-10-08 at
+  commit `32e47a0`, with an exact SIM transcript and passing clean non-editable
+  wheel installation. Evidence limitations are recorded in
+  `docs/evidence/2026-10-08-external-developer-dry-run.md`.
 
 ### DEFERRED
 
@@ -83,8 +87,9 @@ documented opt-in bench acceptance on model 1060 over Protocol 2.0 at 57,600
 baud. No physical acceptance was performed for RB-1. The Real Reference Driver
 milestone is not closed until that external evidence exists.
 
-The PRE-SEED milestone remains incomplete until the external developer dry run
-and the separately evidenced physical hardware gate are complete.
+The Software Developer Preview may proceed using the accepted software
+evidence. The full PRE-SEED milestone remains incomplete until the separately
+evidenced physical hardware gate is complete.
 
 ## Minimum quality gate
 
