@@ -8,21 +8,10 @@ from hiyelx.rpc import MotorGrpcServer, RpcTransportState
 from hiyelx.runtime import RuntimeManager, RuntimeManagerState
 from hiyelx.simulation import SimulatedMotor
 
-EXPECTED_TRANSCRIPT = (
-    "demo=sim-motor",
-    "configuration=valid",
-    "runtime=running",
-    "grpc=running",
-    "motors=sim_motor",
-    "command=positive velocity=2.000",
-    "advance=1.250",
-    "state=positive position=2.500 velocity=2.000",
-    "command=negative velocity=-1.000",
-    "advance=0.500",
-    "state=negative position=2.000 velocity=-1.000",
-    "command=zero velocity=0.000",
-    "stop velocity=0.000",
-    "cleanup grpc=stopped runtime=stopped",
+EXPECTED_TRANSCRIPT = tuple(
+    (
+        Path(__file__).parents[2] / "examples/expected/sim-motor.txt"
+    ).read_text(encoding="utf-8").splitlines()
 )
 
 

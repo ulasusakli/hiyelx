@@ -23,11 +23,11 @@ DEFERRED without treating it as complete:
 
 ### NOW
 
-**PRE-SEED Demo Readiness**
+**External Developer Dry Run**
 
-Use the repeatable local simulation workflow as the software evidence baseline
-for the PRE-SEED Demo. Keep the separate physical hardware proof deferred until
-the documented bench gate can be executed and recorded.
+Have a developer outside the implementation loop follow only the documented
+clean-install and SIM demo path, then record bounded usability findings without
+expanding runtime scope. Physical hardware proof remains separately deferred.
 
 ### NEXT
 
@@ -70,6 +70,9 @@ deferred physical hardware gate are complete.
 - DX-1 Developer Experience + Repeatable SIM Demo established with an
   installable CLI, canonical configuration validation, deterministic explicit
   simulation time, generated-client loopback gRPC control, and verified cleanup.
+- DR-1 Clean Install + Demo Evidence established with a canonical transcript,
+  isolated non-editable wheel installation, source-import rejection, fresh
+  Python 3.12 execution, and a bounded CI packaging smoke gate.
 
 ### DEFERRED
 
@@ -80,8 +83,8 @@ documented opt-in bench acceptance on model 1060 over Protocol 2.0 at 57,600
 baud. No physical acceptance was performed for RB-1. The Real Reference Driver
 milestone is not closed until that external evidence exists.
 
-The PRE-SEED milestone remains incomplete until the repeatable demo and the
-separately evidenced physical hardware gate are complete.
+The PRE-SEED milestone remains incomplete until the external developer dry run
+and the separately evidenced physical hardware gate are complete.
 
 ## Minimum quality gate
 

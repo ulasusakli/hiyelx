@@ -29,24 +29,17 @@ Expected validation output:
 configuration=valid
 ```
 
-Expected deterministic demo output:
+The canonical deterministic 14-line output is
+[`examples/expected/sim-motor.txt`](examples/expected/sim-motor.txt). Verify the
+built wheel in a fresh, non-editable Python 3.12 environment with:
 
-```text
-demo=sim-motor
-configuration=valid
-runtime=running
-grpc=running
-motors=sim_motor
-command=positive velocity=2.000
-advance=1.250
-state=positive position=2.500 velocity=2.000
-command=negative velocity=-1.000
-advance=0.500
-state=negative position=2.000 velocity=-1.000
-command=zero velocity=0.000
-stop velocity=0.000
-cleanup grpc=stopped runtime=stopped
+```bash
+uv run python scripts/verify_clean_install.py
 ```
+
+See
+[`docs/development/clean-install-and-demo.md`](docs/development/clean-install-and-demo.md)
+for the complete evidence contract and troubleshooting boundary.
 
 The CLI uses the generated Motor gRPC client over an ephemeral IPv4 loopback
 port. Simulation time advances explicitly inside the owned `SimulatedMotor`;
@@ -128,9 +121,10 @@ docs/
 
 ## Source-of-truth rule
 
-- Product and architecture: HIYELX Product & Technical Master Plan
+- Product and architecture plan: `docs/plans/HIYELX_PRESEED_Master_Plan_v3.0.docx`
 - Architecture decisions: `docs/decisions/`
-- Implementation and CI: GitHub
-- Delivery state: Linear
+- Implementation and CI: GitHub `main`
+- Delivery state: `PRESEED.md`
+- Optional coordination: Linear may be used when helpful, but is not a PRE-SEED dependency
 
 HIYELX is currently focused on proving a production-quality robot runtime before expanding into motion, perception, autonomy, fleet, or cloud capabilities.
