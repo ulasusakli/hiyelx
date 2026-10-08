@@ -47,6 +47,12 @@ runbook. Its evidence template is intentionally blank until an actual session.
 The founder-accepted PRE-SEED result is recorded in the
 [`2026-10-08 external dry-run evidence`](docs/evidence/2026-10-08-external-developer-dry-run.md).
 
+The bounded Software Preview release-candidate state is documented in the
+[`0.1.0-rc.1 candidate pack`](docs/releases/software-preview-0.1.0-rc.1.md),
+with capability-level links in the
+[`software evidence index`](docs/evidence/software-evidence-index.md). This is
+candidate evidence only; the Software Developer Preview has not been released.
+
 The CLI uses the generated Motor gRPC client over an ephemeral IPv4 loopback
 port. Simulation time advances explicitly inside the owned `SimulatedMotor`;
 there is no simulation-control RPC, wall-clock stepping, hardware access, or

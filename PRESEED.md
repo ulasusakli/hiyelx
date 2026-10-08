@@ -25,9 +25,11 @@ DEFERRED without treating it as complete:
 
 **Software Preview Release Candidate**
 
-Assemble the versioned software evidence index, release notes, known
-limitations, license decision, and founder sign-off required for a bounded
-Software Developer Preview. Do not add runtime, cloud, or hardware capability.
+The versioned `0.1.0-rc.1` candidate pack and software evidence index are under
+verification. The repository has no explicit license; license selection and
+implementation remain an open founder decision and release blocker. Founder
+release authorization also remains outstanding. Do not add runtime, cloud, or
+hardware capability, and do not mark the Software Developer Preview released.
 
 ### NEXT
 
