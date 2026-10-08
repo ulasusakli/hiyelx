@@ -41,6 +41,10 @@ See
 [`docs/development/clean-install-and-demo.md`](docs/development/clean-install-and-demo.md)
 for the complete evidence contract and troubleshooting boundary.
 
+External participants should receive the repository URL and the
+[`External Developer Dry Run`](docs/development/external-developer-dry-run.md)
+runbook. Its evidence template is intentionally blank until an actual session.
+
 The CLI uses the generated Motor gRPC client over an ephemeral IPv4 loopback
 port. Simulation time advances explicitly inside the owned `SimulatedMotor`;
 there is no simulation-control RPC, wall-clock stepping, hardware access, or
