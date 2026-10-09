@@ -52,9 +52,10 @@ The SPRC-1 candidate worktree was verified on 2026-10-08:
 | `uv run python scripts/generate_proto.py --check` | PASS; committed generated modules are consistent |
 | `uv run ruff check .` | PASS; all checks passed |
 | `uv run pyright` | PASS; 0 errors, 0 warnings in configured strict mode |
-| `uv run pytest` | PASS; 242 passed, 1 physical test skipped, 0 failed, 0 deselected |
+| `uv run pytest` | PASS; 244 passed, 1 physical test skipped, 0 failed, 0 deselected |
 | `uv build --wheel` | PASS; built `hiyelx-0.1.0-py3-none-any.whl` |
-| `uv run python scripts/verify_clean_install.py` | PASS; reported `clean-install=passed` |
+| Wheel license inspection | PASS; `License-Expression: Apache-2.0`, `License-File: LICENSE`, canonical bytes matched |
+| `uv run python scripts/verify_clean_install.py` | PASS; license checks and clean install reported `clean-install=passed` |
 
 Environment-blocked tests: 0. The physical test was not run because it requires
 explicit hardware opt-ins and `-m hardware`. These local results are software
@@ -73,6 +74,9 @@ evidence, not package publication or physical acceptance.
   consistency.
 - The wheel contains the canonical SIM configuration and is verified through a
   non-editable clean installation.
+- Repository and package licensing use the founder-authorized Apache License
+  2.0. Distribution metadata declares `Apache-2.0`, and the wheel gate verifies
+  the embedded canonical `LICENSE` file.
 - There is no compatibility promise beyond the explicitly documented PRE-SEED
   contracts, and there is no package-registry publication in SPRC-1.
 
@@ -125,16 +129,20 @@ The candidate keeps three kinds of evidence separate:
 
 ## Licensing and release blockers
 
-No explicit repository license file or package license declaration exists at
-this candidate baseline. License selection is an open founder decision and a
-release blocker. SPRC-1 does not choose or add a license.
+The founder selected Apache License 2.0. LIC-1 implements that decision with
+the unmodified canonical text in the repository-root [`LICENSE`](../../LICENSE),
+the PEP 639 package expression `Apache-2.0`, and deterministic wheel checks for
+both metadata and license-file inclusion.
 
-The bounded Software Developer Preview must remain unreleased until:
+The distributed first-party and generated files were inspected for retained
+attribution requirements. Runtime dependencies are declared rather than
+vendored, and no distributed third-party NOTICE content was found. A `NOTICE`
+file is therefore not required for this bounded integration; no copyright owner
+or speculative attribution was invented.
 
-1. the founder explicitly selects or otherwise resolves the repository license;
-2. the license decision is implemented and reviewed; and
-3. the founder reviews this evidence pack and explicitly authorizes the preview
-   release operation.
+The missing-license blocker is closed. The bounded Software Developer Preview
+must remain unreleased until the founder separately reviews the completed
+candidate evidence and explicitly authorizes the release operation.
 
 Physical hardware acceptance is not a prerequisite for evaluating this
 software-only candidate, but it remains required for the Real Reference Driver,

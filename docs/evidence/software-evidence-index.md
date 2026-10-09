@@ -21,6 +21,7 @@ Software Developer Preview released.
 | RB-2 | Implemented | [`../architecture/reliability-rb2.md`](../architecture/reliability-rb2.md) | Best-effort safe-stop, immutable health propagation, and instance-local structured events | [`tests/unit/runtime/test_safe_stop.py`](../../tests/unit/runtime/test_safe_stop.py) and associated regression suites |
 | DX-1 | Implemented | [README quickstart](../../README.md) | Installable CLI and deterministic loopback SIM demo in [`../../src/hiyelx/cli.py`](../../src/hiyelx/cli.py) | [`tests/unit/test_cli.py`](../../tests/unit/test_cli.py) and canonical [`sim-motor.txt`](../../examples/expected/sim-motor.txt) |
 | DR-1 | Implemented | [`../development/clean-install-and-demo.md`](../development/clean-install-and-demo.md) | [`../../scripts/verify_clean_install.py`](../../scripts/verify_clean_install.py) and CI wheel smoke gate | [`tests/unit/test_verify_clean_install.py`](../../tests/unit/test_verify_clean_install.py) plus isolated non-editable wheel verification |
+| LIC-1 | Implemented | Founder-authorized [`Apache License 2.0`](../../LICENSE) and PEP 639 package metadata | `Apache-2.0` license expression and canonical license included in wheel metadata | Clean-install verifier rejects metadata drift, missing license files, or changed license content |
 
 All entries above are software evidence. “Implemented” does not mean released,
 physically accepted, hard real-time, or certified safe.
@@ -62,6 +63,6 @@ The required bench boundary and deferred limitations are documented in
   [`../releases/software-preview-0.1.0-rc.1.md`](../releases/software-preview-0.1.0-rc.1.md)
 - Delivery state: [`../../PRESEED.md`](../../PRESEED.md)
 - Implementation source of truth: GitHub `main`
-- License: no explicit license exists; founder decision required before release
+- License: founder-authorized Apache License 2.0 implemented and verified in the wheel
 - Software Developer Preview: not released
 - Git tag, GitHub Release, and package publication: not created

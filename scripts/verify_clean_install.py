@@ -7,8 +7,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from email.parser import BytesParser
+from email.policy import default
 from pathlib import Path
 
 SUCCESS = 0
@@ -18,6 +21,7 @@ ENVIRONMENT_BLOCKED = 2
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_TRANSCRIPT = REPOSITORY_ROOT / "examples/expected/sim-motor.txt"
 DEMO_CONFIG = REPOSITORY_ROOT / "examples/configs/sim-motor.yaml"
+EXPECTED_LICENSE_EXPRESSION = "Apache-2.0"
 
 
 class VerificationError(Exception):
@@ -108,6 +112,7 @@ def run_clean_install_verification(
         if len(wheels) != 1:
             raise VerificationFailure
         wheel = wheels[0]
+        assert_wheel_license(wheel, repository_root=repository_root)
 
         _require_success(
             command_runner(
@@ -205,6 +210,33 @@ def assert_installed_package_path(
         raise VerificationFailure
     if resolved != environment and environment not in resolved.parents:
         raise VerificationFailure
+
+
+def assert_wheel_license(wheel: Path, *, repository_root: Path) -> None:
+    """Require PEP 639 metadata and the canonical repository license in a wheel."""
+    expected_license = (repository_root / "LICENSE").read_bytes()
+    try:
+        with zipfile.ZipFile(wheel) as archive:
+            names = archive.namelist()
+            metadata_names = tuple(
+                name for name in names if name.endswith(".dist-info/METADATA")
+            )
+            license_names = tuple(
+                name for name in names if name.endswith(".dist-info/licenses/LICENSE")
+            )
+            if len(metadata_names) != 1 or len(license_names) != 1:
+                raise VerificationFailure
+            metadata = BytesParser(policy=default).parsebytes(
+                archive.read(metadata_names[0])
+            )
+            if metadata.get("License-Expression") != EXPECTED_LICENSE_EXPRESSION:
+                raise VerificationFailure
+            if "LICENSE" not in metadata.get_all("License-File", []):
+                raise VerificationFailure
+            if archive.read(license_names[0]) != expected_license:
+                raise VerificationFailure
+    except (OSError, KeyError, zipfile.BadZipFile) as error:
+        raise VerificationFailure from error
 
 
 def _run_command(

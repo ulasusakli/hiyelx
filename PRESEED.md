@@ -26,10 +26,10 @@ DEFERRED without treating it as complete:
 **Software Preview Release Candidate**
 
 The versioned `0.1.0-rc.1` candidate pack and software evidence index are under
-verification. The repository has no explicit license; license selection and
-implementation remain an open founder decision and release blocker. Founder
-release authorization also remains outstanding. Do not add runtime, cloud, or
-hardware capability, and do not mark the Software Developer Preview released.
+final review. The founder-authorized Apache License 2.0 decision is implemented
+in the repository and package evidence. Separate founder release authorization
+remains outstanding. Do not add runtime, cloud, or hardware capability, and do
+not mark the Software Developer Preview released.
 
 ### NEXT
 
@@ -79,6 +79,8 @@ is still required before the full PRE-SEED milestone can close.
   commit `32e47a0`, with an exact SIM transcript and passing clean non-editable
   wheel installation. Evidence limitations are recorded in
   `docs/evidence/2026-10-08-external-developer-dry-run.md`.
+- LIC-1 Apache-2.0 License Integration established with canonical repository
+  text, PEP 639 package metadata, and deterministic wheel license verification.
 
 ### DEFERRED
 

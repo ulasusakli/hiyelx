@@ -1,5 +1,6 @@
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from zipfile import ZipFile
 
 import pytest
 
@@ -26,7 +27,7 @@ class FakeRunner:
         if "build" in command:
             output = Path(command[command.index("--out-dir") + 1])
             output.mkdir(parents=True)
-            (output / "hiyelx-0.1.0-py3-none-any.whl").write_bytes(b"wheel")
+            write_test_wheel(output / "hiyelx-0.1.0-py3-none-any.whl")
         elif "venv" in command:
             environment_path = Path(command[-1])
             binaries = environment_path / "bin"
@@ -53,6 +54,28 @@ class FakeRunner:
         return verify.CommandResult(0, b"", b"")
 
 
+def write_test_wheel(
+    path: Path,
+    *,
+    license_expression: str = verify.EXPECTED_LICENSE_EXPRESSION,
+    include_license: bool = True,
+) -> None:
+    with ZipFile(path, "w") as wheel:
+        wheel.writestr(
+            "hiyelx-0.1.0.dist-info/METADATA",
+            "Metadata-Version: 2.4\n"
+            "Name: hiyelx\n"
+            "Version: 0.1.0\n"
+            f"License-Expression: {license_expression}\n"
+            "License-File: LICENSE\n\n",
+        )
+        if include_license:
+            wheel.write(
+                REPOSITORY_ROOT / "LICENSE",
+                "hiyelx-0.1.0.dist-info/licenses/LICENSE",
+            )
+
+
 def test_canonical_transcript_loading_and_equality() -> None:
     expected_path = REPOSITORY_ROOT / "examples/expected/sim-motor.txt"
     expected = expected_path.read_bytes()
@@ -74,6 +97,22 @@ def test_source_checkout_import_is_rejected(tmp_path: Path) -> None:
             repository_root=REPOSITORY_ROOT,
             environment_path=environment,
         )
+
+
+def test_wheel_license_metadata_drift_is_rejected(tmp_path: Path) -> None:
+    wheel = tmp_path / "hiyelx-0.1.0-py3-none-any.whl"
+    write_test_wheel(wheel, license_expression="MIT")
+
+    with pytest.raises(verify.VerificationFailure):
+        verify.assert_wheel_license(wheel, repository_root=REPOSITORY_ROOT)
+
+
+def test_missing_wheel_license_file_is_rejected(tmp_path: Path) -> None:
+    wheel = tmp_path / "hiyelx-0.1.0-py3-none-any.whl"
+    write_test_wheel(wheel, include_license=False)
+
+    with pytest.raises(verify.VerificationFailure):
+        verify.assert_wheel_license(wheel, repository_root=REPOSITORY_ROOT)
 
 
 def test_verification_output_is_sanitized(

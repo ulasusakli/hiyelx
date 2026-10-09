@@ -53,6 +53,13 @@ with capability-level links in the
 [`software evidence index`](docs/evidence/software-evidence-index.md). This is
 candidate evidence only; the Software Developer Preview has not been released.
 
+## License
+
+HIYELX is licensed under the
+[`Apache License 2.0`](LICENSE). The package declares the SPDX expression
+`Apache-2.0`, and the clean-install gate verifies that built wheels carry both
+the expression and the canonical license text.
+
 The CLI uses the generated Motor gRPC client over an ephemeral IPv4 loopback
 port. Simulation time advances explicitly inside the owned `SimulatedMotor`;
 there is no simulation-control RPC, wall-clock stepping, hardware access, or
