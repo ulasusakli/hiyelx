@@ -47,6 +47,20 @@ class FakeRunner:
             return verify.CommandResult(0, b"Python 3.12.14\n", b"")
         elif "validate-config" in command:
             return verify.CommandResult(0, b"configuration=valid\n", b"")
+        elif "scaffold" in command:
+            scaffold_path = Path(command[3])
+            for relative_path in verify.EXPECTED_SCAFFOLD_FILES:
+                destination = scaffold_path / relative_path
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text("generated", encoding="utf-8")
+            return verify.CommandResult(
+                0,
+                b"scaffold=motor-driver\n"
+                b"package=acme_motor_driver\n"
+                b"model=motor.acme.reference\n"
+                b"files=6\n",
+                b"",
+            )
         elif command[-2:] == ("demo", "sim-motor"):
             if self.fail_demo:
                 return verify.CommandResult(1, b"", b"secret backend failure")
@@ -97,6 +111,15 @@ def test_source_checkout_import_is_rejected(tmp_path: Path) -> None:
             repository_root=REPOSITORY_ROOT,
             environment_path=environment,
         )
+
+
+def test_scaffold_layout_drift_is_rejected(tmp_path: Path) -> None:
+    scaffold = tmp_path / "scaffold"
+    scaffold.mkdir()
+    (scaffold / "README.md").write_text("incomplete", encoding="utf-8")
+
+    with pytest.raises(verify.VerificationFailure):
+        verify.assert_scaffold_layout(scaffold)
 
 
 def test_wheel_license_metadata_drift_is_rejected(tmp_path: Path) -> None:

@@ -22,6 +22,14 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_TRANSCRIPT = REPOSITORY_ROOT / "examples/expected/sim-motor.txt"
 DEMO_CONFIG = REPOSITORY_ROOT / "examples/configs/sim-motor.yaml"
 EXPECTED_LICENSE_EXPRESSION = "Apache-2.0"
+EXPECTED_SCAFFOLD_FILES = (
+    Path("README.md"),
+    Path("acme_motor_driver/__init__.py"),
+    Path("acme_motor_driver/acme_motor_driver.py"),
+    Path("pyproject.toml"),
+    Path("runtime.yaml"),
+    Path("tests/test_driver.py"),
+)
 
 
 class VerificationError(Exception):
@@ -162,6 +170,32 @@ def run_clean_install_verification(
             command_runner((str(executable), "--help"), workspace, environment),
             environment_sensitive=False,
         )
+        scaffold_path = workspace / "driver-scaffold"
+        scaffolded = _require_success(
+            command_runner(
+                (
+                    str(executable),
+                    "scaffold",
+                    "motor-driver",
+                    str(scaffold_path),
+                    "--package-name",
+                    "acme_motor_driver",
+                    "--model-name",
+                    "motor.acme.reference",
+                ),
+                workspace,
+                environment,
+            ),
+            environment_sensitive=False,
+        )
+        if _strip_one_final_newline(scaffolded.stdout) != (
+            b"scaffold=motor-driver\n"
+            b"package=acme_motor_driver\n"
+            b"model=motor.acme.reference\n"
+            b"files=6"
+        ):
+            raise VerificationFailure
+        assert_scaffold_layout(scaffold_path)
         validated = _require_success(
             command_runner(
                 (str(executable), "validate-config", str(copied_config)),
@@ -209,6 +243,21 @@ def assert_installed_package_path(
     if resolved == source or source in resolved.parents:
         raise VerificationFailure
     if resolved != environment and environment not in resolved.parents:
+        raise VerificationFailure
+
+
+def assert_scaffold_layout(scaffold_path: Path) -> None:
+    """Require the installed CLI to render the complete bounded scaffold."""
+    if not scaffold_path.is_dir():
+        raise VerificationFailure
+    actual = tuple(
+        sorted(
+            path.relative_to(scaffold_path)
+            for path in scaffold_path.rglob("*")
+            if path.is_file()
+        )
+    )
+    if actual != EXPECTED_SCAFFOLD_FILES:
         raise VerificationFailure
 
 

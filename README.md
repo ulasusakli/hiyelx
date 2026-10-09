@@ -65,6 +65,21 @@ port. Simulation time advances explicitly inside the owned `SimulatedMotor`;
 there is no simulation-control RPC, wall-clock stepping, hardware access, or
 cloud dependency.
 
+## Module/Driver SDK Alpha
+
+Trusted external motor packages can integrate without editing HIYELX core by
+using the public, explicit `register_motor_driver` helper. Configuration never
+imports Python paths or discovers packages. See the
+[`Module/Driver SDK Alpha`](docs/development/module-driver-sdk.md) guide for the
+strict settings, `Motor` implementation, and application-owned registration
+contract. Generate a non-overwriting, hardware-free starting point with:
+
+```bash
+hiyelx scaffold motor-driver ./acme-driver \
+  --package-name acme_motor_driver \
+  --model-name motor.acme.reference
+```
+
 ## Pre-seed scope
 
 - Resource / Component / Service model

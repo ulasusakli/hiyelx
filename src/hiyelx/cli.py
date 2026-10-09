@@ -17,6 +17,7 @@ from hiyelx.resources import ResourceIdentity
 from hiyelx.rpc import MotorGrpcServer, RpcTransportState
 from hiyelx.rpc.generated import motor_pb2, motor_pb2_grpc
 from hiyelx.runtime import RuntimeManager, RuntimeManagerState
+from hiyelx.sdk import MotorDriverScaffoldError, create_motor_driver_scaffold
 from hiyelx.simulation import SimulatedMotor, register_simulated_motor
 
 SUCCESS = 0
@@ -44,6 +45,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         for line in transcript:
             print(line)
         return SUCCESS
+    if arguments.command == "scaffold" and arguments.scaffold == "motor-driver":
+        return _scaffold_motor_driver(
+            arguments.output,
+            package_name=arguments.package_name,
+            model_name=arguments.model_name,
+        )
 
     parser.error("a command is required")
 
@@ -64,6 +71,19 @@ def _parser() -> argparse.ArgumentParser:
     demo = commands.add_parser("demo", help="run a deterministic local demo")
     demos = demo.add_subparsers(dest="demo")
     demos.add_parser("sim-motor", help="run the loopback simulated-motor demo")
+
+    scaffold = commands.add_parser(
+        "scaffold",
+        help="create a non-overwriting local development scaffold",
+    )
+    scaffolds = scaffold.add_subparsers(dest="scaffold")
+    motor_driver = scaffolds.add_parser(
+        "motor-driver",
+        help="create a hardware-free external motor-driver starting point",
+    )
+    motor_driver.add_argument("output", type=Path)
+    motor_driver.add_argument("--package-name", required=True)
+    motor_driver.add_argument("--model-name", required=True)
     return parser
 
 
@@ -74,6 +94,28 @@ def _validate_config(path: Path) -> int:
         print("error: configuration is invalid", file=sys.stderr)
         return FAILURE
     print("configuration=valid")
+    return SUCCESS
+
+
+def _scaffold_motor_driver(
+    output: Path,
+    *,
+    package_name: str,
+    model_name: str,
+) -> int:
+    try:
+        created = create_motor_driver_scaffold(
+            output,
+            package_name=package_name,
+            model_name=model_name,
+        )
+    except (MotorDriverScaffoldError, OSError):
+        print("error: motor-driver scaffold failed", file=sys.stderr)
+        return FAILURE
+    print("scaffold=motor-driver")
+    print(f"package={package_name}")
+    print(f"model={model_name}")
+    print(f"files={len(created)}")
     return SUCCESS
 
 

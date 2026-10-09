@@ -25,6 +25,7 @@ def test_cli_help_and_demo_dispatch(
     help_output = capsys.readouterr().out
     assert "validate-config" in help_output
     assert "demo" in help_output
+    assert "scaffold" in help_output
 
     async def fake_demo() -> tuple[str, ...]:
         return ("demo=dispatched",)
@@ -137,3 +138,61 @@ def test_cli_demo_failure_output_is_sanitized(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == "error: sim-motor demo failed\n"
+
+
+def test_motor_driver_scaffold_cli_creates_files(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    output = tmp_path / "acme-driver"
+
+    assert (
+        cli.main(
+            [
+                "scaffold",
+                "motor-driver",
+                str(output),
+                "--package-name",
+                "acme_motor_driver",
+                "--model-name",
+                "motor.acme.reference",
+            ]
+        )
+        == cli.SUCCESS
+    )
+    captured = capsys.readouterr()
+    assert captured.out == (
+        "scaffold=motor-driver\n"
+        "package=acme_motor_driver\n"
+        "model=motor.acme.reference\n"
+        "files=6\n"
+    )
+    assert captured.err == ""
+    assert (output / "tests/test_driver.py").is_file()
+
+
+def test_motor_driver_scaffold_cli_refuses_overwrite_without_path_disclosure(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    output = tmp_path / "private-driver"
+    output.mkdir()
+
+    assert (
+        cli.main(
+            [
+                "scaffold",
+                "motor-driver",
+                str(output),
+                "--package-name",
+                "acme_motor_driver",
+                "--model-name",
+                "motor.acme.reference",
+            ]
+        )
+        == cli.FAILURE
+    )
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "error: motor-driver scaffold failed\n"
+    assert str(output) not in captured.err

@@ -2,17 +2,15 @@
 
 from collections.abc import Callable
 
-from pydantic import ValidationError
-
-from hiyelx.config import ResourceDefinition
 from hiyelx.drivers.dynamixel.settings import XL430MotorSettings
 from hiyelx.drivers.dynamixel.transport import (
     DynamixelTransport,
     SdkDynamixelTransport,
 )
 from hiyelx.drivers.dynamixel.xl430_motor import XL430Motor
-from hiyelx.models import InvalidModelSettingsError, ModelRegistry
-from hiyelx.resources import Resource
+from hiyelx.models import ModelRegistry
+from hiyelx.resources import ResourceIdentity
+from hiyelx.sdk import register_motor_driver
 
 XL430_W250_T_MODEL = "motor.dynamixel.xl430_w250_t"
 TransportFactory = Callable[[XL430MotorSettings], DynamixelTransport]
@@ -26,18 +24,19 @@ def register_dynamixel_xl430_motor(
     """Register the XL430 factory without opening or discovering hardware."""
     factory = transport_factory or _default_transport_factory
 
-    def create(definition: ResourceDefinition) -> Resource:
-        try:
-            settings = XL430MotorSettings.model_validate(definition.settings, strict=True)
-        except ValidationError as error:
-            raise InvalidModelSettingsError(XL430_W250_T_MODEL) from error
+    def create(identity: ResourceIdentity, settings: XL430MotorSettings) -> XL430Motor:
         return XL430Motor(
-            definition.identity,
+            identity,
             settings,
             factory(settings),
         )
 
-    registry.register(XL430_W250_T_MODEL, create)
+    register_motor_driver(
+        registry,
+        model_name=XL430_W250_T_MODEL,
+        settings_type=XL430MotorSettings,
+        builder=create,
+    )
 
 
 def _default_transport_factory(settings: XL430MotorSettings) -> DynamixelTransport:
