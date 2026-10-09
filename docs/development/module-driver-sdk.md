@@ -34,10 +34,11 @@ acme-driver/
     test_driver.py
 ```
 
-The generated motor is deliberately in-memory. Its five baseline tests cover
-construction without I/O, strict settings rejection, lifecycle, command/state,
-stop, and shutdown. Run them from the generated directory in a development
-environment that contains HIYELX, pytest, and pytest-asyncio:
+The generated motor is deliberately in-memory. Its five baseline tests use the
+reusable software-only compliance harness to cover construction without I/O,
+strict settings rejection, lifecycle, command/state, stop, shutdown, and
+ordered cleanup evidence. Run them from the generated directory in a
+development environment that contains HIYELX, pytest, and pytest-asyncio:
 
 ```bash
 pytest
@@ -46,6 +47,29 @@ pytest
 Passing the generated tests is software-contract evidence only. It is not
 evidence that a vendor transport, physical device, torque behavior, movement,
 or cleanup path has been accepted.
+
+## Run software-only compliance
+
+`MotorComplianceFixture` and `run_motor_compliance` provide a small reusable
+contract runner without a pytest runtime dependency. The fixture supplies the
+motor factory, bounded command, driver-owned state predicates, settings and
+builder rejection probes, and an immutable ordered-event snapshot. The runner
+returns an immutable `MotorComplianceReport` or raises a typed sanitized
+`MotorComplianceFailure` chained from the underlying failure.
+
+The explicit `software_only=True` declaration is mandatory and is checked
+before the motor factory or any lifecycle callback runs. Never pass a physical
+production backend to this harness: calling `start()` on a real driver may open
+a device or enable torque. Compliance execution is authorized only with an
+in-memory motor or deterministic fake transport. Passing results are
+software-contract evidence, not physical acceptance.
+
+Command effects and stopped behavior are supplied as fixture callbacks. The
+harness does not assume that physical feedback immediately equals a commanded
+velocity. Driver fakes may inject startup, command, or shutdown failures; the
+typed compliance error preserves the failure as its cause and retains the
+ordered event snapshot without including arbitrary backend text in its public
+message.
 
 ## Define strict settings
 
@@ -161,3 +185,7 @@ The alpha does not yet provide package discovery, entry points, a project
 publisher, a complete reusable vendor-driver certification suite, compatibility
 promises, shared-bus ownership, retry/reconnect policy, or physical acceptance
 for an external driver.
+
+Use the
+[`Motor Driver Porting Checklist`](motor-driver-porting-checklist.md) before
+adapting the scaffold to alternative hardware.

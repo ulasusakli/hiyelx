@@ -71,8 +71,11 @@ Trusted external motor packages can integrate without editing HIYELX core by
 using the public, explicit `register_motor_driver` helper. Configuration never
 imports Python paths or discovers packages. See the
 [`Module/Driver SDK Alpha`](docs/development/module-driver-sdk.md) guide for the
-strict settings, `Motor` implementation, and application-owned registration
-contract. Generate a non-overwriting, hardware-free starting point with:
+strict settings, software-only compliance, `Motor` implementation, and
+application-owned registration contract. The
+[`Motor Driver Porting Checklist`](docs/development/motor-driver-porting-checklist.md)
+defines the separate software and physical evidence boundaries. Generate a
+non-overwriting, hardware-free starting point with:
 
 ```bash
 hiyelx scaffold motor-driver ./acme-driver \

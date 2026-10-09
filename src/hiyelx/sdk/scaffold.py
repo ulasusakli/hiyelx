@@ -78,14 +78,21 @@ class $class_name(Motor):
         super().__init__(identity)
         self._settings = settings
         self._motor_state = MotorState(settings.initial_position_radians, 0.0)
+        self._events: list[str] = []
+
+    @property
+    def events(self) -> tuple[str, ...]:
+        return tuple(self._events)
 
     async def _on_start(self) -> None:
+        self._events.append("startup")
         self._motor_state = MotorState(
             self._motor_state.angular_position_radians,
             0.0,
         )
 
     async def _on_shutdown(self) -> None:
+        self._events.append("shutdown")
         self._motor_state = MotorState(
             self._motor_state.angular_position_radians,
             0.0,
@@ -95,6 +102,7 @@ class $class_name(Motor):
         velocity = command.angular_velocity_radians_per_second
         if abs(velocity) > self._settings.max_abs_velocity_rad_s:
             raise ValueError("motor command exceeds configured scaffold limit")
+        self._events.append(f"command:{velocity}")
         self._motor_state = MotorState(
             self._motor_state.angular_position_radians,
             velocity,
@@ -115,13 +123,25 @@ def $register_function(registry: ModelRegistry) -> None:
 )
 
 _TEST_TEMPLATE = Template(
-    '''import pytest
-from hiyelx.components import MotorCommand
+    '''from typing import cast
+
+import pytest
+from hiyelx.components import Motor, MotorCommand
 from hiyelx.config import ResourceDefinition
 from hiyelx.models import ModelCreationError, ModelRegistry
-from hiyelx.resources import LifecycleState, ResourceIdentity
+from hiyelx.resources import LifecycleState, Resource, ResourceIdentity
+from hiyelx.sdk import (
+    MotorComplianceFixture,
+    register_motor_driver,
+    run_motor_compliance,
+)
 
-from $package_name import MODEL_NAME, $class_name, $register_function
+from $package_name import (
+    MODEL_NAME,
+    $class_name,
+    ${class_name}Settings,
+    $register_function,
+)
 
 
 def _definition(settings: dict[str, object]) -> ResourceDefinition:
@@ -165,34 +185,74 @@ def test_invalid_settings_are_rejected(settings: dict[str, object]) -> None:
         registry.create(_definition(settings))
 
 
-@pytest.mark.asyncio
-async def test_lifecycle_command_state_stop_and_shutdown() -> None:
+def _reject_invalid_settings() -> None:
     registry = ModelRegistry()
     $register_function(registry)
-    resource = registry.create(
-        _definition(
-            {
-                "initial_position_radians": 1.25,
-                "max_abs_velocity_rad_s": 0.5,
-            }
+    registry.create(_definition({"initial_position_radians": "1.25"}))
+
+
+def _reject_non_motor_builder() -> None:
+    registry = ModelRegistry()
+
+    def invalid_builder(
+        identity: ResourceIdentity,
+        settings: ${class_name}Settings,
+    ) -> Motor:
+        del settings
+        return cast(Motor, Resource(identity))
+
+    register_motor_driver(
+        registry,
+        model_name="motor.generated.invalid",
+        settings_type=${class_name}Settings,
+        builder=invalid_builder,
+    )
+    registry.create(
+        ResourceDefinition(
+            identity=ResourceIdentity("invalid_motor"),
+            model="motor.generated.invalid",
+            settings={"initial_position_radians": 0.0},
         )
     )
-    assert isinstance(resource, $class_name)
 
-    await resource.start()
-    assert resource.state is LifecycleState.RUNNING
 
-    await resource.apply_command(MotorCommand(0.25))
-    commanded = await resource.read_state()
-    assert commanded.angular_position_radians == 1.25
-    assert commanded.angular_velocity_radians_per_second == 0.25
+@pytest.mark.asyncio
+async def test_software_only_motor_compliance() -> None:
+    built: list[$class_name] = []
 
-    await resource.stop()
-    stopped = await resource.read_state()
-    assert stopped.angular_velocity_radians_per_second == 0.0
+    def build() -> $class_name:
+        motor = $class_name(
+            ResourceIdentity("example_motor"),
+            ${class_name}Settings(
+                initial_position_radians=1.25,
+                max_abs_velocity_rad_s=0.5,
+            ),
+        )
+        built.append(motor)
+        return motor
 
-    await resource.shutdown()
-    assert resource.state is LifecycleState.STOPPED
+    report = await run_motor_compliance(
+        MotorComplianceFixture(
+            software_only=True,
+            expected_identity=ResourceIdentity("example_motor"),
+            motor_factory=build,
+            command=MotorCommand(0.25),
+            verify_command_effect=lambda state: (
+                state.angular_position_radians == 1.25
+                and state.angular_velocity_radians_per_second == 0.25
+            ),
+            verify_stopped=lambda state: (
+                state.angular_velocity_radians_per_second == 0.0
+            ),
+            reject_invalid_settings=_reject_invalid_settings,
+            reject_non_motor_builder=_reject_non_motor_builder,
+            event_snapshot=lambda: built[0].events if built else (),
+            expected_cleanup_order=("command:0.0", "shutdown"),
+        )
+    )
+
+    assert report.final_lifecycle is LifecycleState.STOPPED
+    assert report.events[-2:] == ("command:0.0", "shutdown")
 '''
 )
 
@@ -212,7 +272,7 @@ _README_TEMPLATE = Template(
 
 This generated package is a hardware-free, in-memory starting point for model
 `$model_name`. It demonstrates strict settings, explicit registration, and the
-HIYELX Motor lifecycle/command/state contract.
+HIYELX software-only Motor compliance harness.
 
 Run the generated contract tests from this directory in an environment that
 already contains HIYELX and its development test dependencies:
@@ -233,6 +293,8 @@ Before replacing the in-memory operations with a vendor SDK:
 
 This scaffold does not authorize hardware access, torque, or motion and is not
 evidence of physical acceptance, hard-real-time behavior, or certified safety.
+Never pass a production physical backend to the compliance harness: lifecycle
+startup in a real driver may enable torque.
 '''
 )
 

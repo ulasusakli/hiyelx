@@ -36,6 +36,9 @@ def test_scaffold_creates_complete_deterministic_starting_point(tmp_path: Path) 
     )
     driver = output / "acme_motor_driver/acme_motor_driver.py"
     assert "class AcmeMotorDriver(Motor):" in driver.read_text(encoding="utf-8")
+    generated_tests = (output / "tests/test_driver.py").read_text(encoding="utf-8")
+    assert "run_motor_compliance" in generated_tests
+    assert "software_only=True" in generated_tests
     for relative_path in created:
         if relative_path.suffix == ".py":
             source = (output / relative_path).read_text(encoding="utf-8")
