@@ -43,7 +43,7 @@ def test_scaffold_creates_complete_deterministic_starting_point(tmp_path: Path) 
     assert 'name = "acme-motor-driver"' in pyproject
     assert 'version = "0.1.0"' in pyproject
     assert 'requires-python = ">=3.12"' in pyproject
-    assert '"hiyelx==0.1.0"' in pyproject
+    assert '"hiyelx==0.2.0a1"' in pyproject
     assert 'packages = ["acme_motor_driver"]' in pyproject
     for relative_path in created:
         if relative_path.suffix == ".py":

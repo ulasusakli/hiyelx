@@ -27,7 +27,7 @@ class FakeRunner:
         if "build" in command:
             output = Path(command[command.index("--out-dir") + 1])
             output.mkdir(parents=True)
-            write_test_wheel(output / "hiyelx-0.1.0-py3-none-any.whl")
+            write_test_wheel(output / "hiyelx-0.2.0a1-py3-none-any.whl")
         elif "venv" in command:
             environment_path = Path(command[-1])
             binaries = environment_path / "bin"
@@ -76,17 +76,17 @@ def write_test_wheel(
 ) -> None:
     with ZipFile(path, "w") as wheel:
         wheel.writestr(
-            "hiyelx-0.1.0.dist-info/METADATA",
+            "hiyelx-0.2.0a1.dist-info/METADATA",
             "Metadata-Version: 2.4\n"
             "Name: hiyelx\n"
-            "Version: 0.1.0\n"
+            "Version: 0.2.0a1\n"
             f"License-Expression: {license_expression}\n"
             "License-File: LICENSE\n\n",
         )
         if include_license:
             wheel.write(
                 REPOSITORY_ROOT / "LICENSE",
-                "hiyelx-0.1.0.dist-info/licenses/LICENSE",
+                "hiyelx-0.2.0a1.dist-info/licenses/LICENSE",
             )
 
 
@@ -123,7 +123,7 @@ def test_scaffold_layout_drift_is_rejected(tmp_path: Path) -> None:
 
 
 def test_wheel_license_metadata_drift_is_rejected(tmp_path: Path) -> None:
-    wheel = tmp_path / "hiyelx-0.1.0-py3-none-any.whl"
+    wheel = tmp_path / "hiyelx-0.2.0a1-py3-none-any.whl"
     write_test_wheel(wheel, license_expression="MIT")
 
     with pytest.raises(verify.VerificationFailure):
@@ -131,7 +131,7 @@ def test_wheel_license_metadata_drift_is_rejected(tmp_path: Path) -> None:
 
 
 def test_missing_wheel_license_file_is_rejected(tmp_path: Path) -> None:
-    wheel = tmp_path / "hiyelx-0.1.0-py3-none-any.whl"
+    wheel = tmp_path / "hiyelx-0.2.0a1-py3-none-any.whl"
     write_test_wheel(wheel, include_license=False)
 
     with pytest.raises(verify.VerificationFailure):
@@ -181,7 +181,7 @@ def test_temporary_workspace_is_removed_after_success(tmp_path: Path) -> None:
         temporary_parent=tmp_path,
     )
 
-    assert wheel == "hiyelx-0.1.0-py3-none-any.whl"
+    assert wheel == "hiyelx-0.2.0a1-py3-none-any.whl"
     assert tuple(tmp_path.iterdir()) == ()
 
 

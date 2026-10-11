@@ -274,7 +274,7 @@ This generated package is a hardware-free, in-memory starting point for model
 `$model_name`. It demonstrates strict settings, explicit registration, and the
 HIYELX software-only Motor compliance harness.
 
-This scaffold is compatible with the current `hiyelx==0.1.0` package contract
+This scaffold is compatible with the current `hiyelx==0.2.0a1` package contract
 only. Run the generated contract tests from this directory in an environment
 that already contains HIYELX and its development test dependencies:
 
@@ -287,7 +287,7 @@ to the matching HIYELX wheel:
 
 ```bash
 uv build --wheel
-uv pip install /path/to/hiyelx-0.1.0-py3-none-any.whl \
+uv pip install /path/to/hiyelx-0.2.0a1-py3-none-any.whl \
   dist/$package_name-0.1.0-py3-none-any.whl
 ```
 
@@ -336,7 +336,7 @@ description = "Hardware-free HIYELX motor driver scaffold"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-  "hiyelx==0.1.0",
+  "hiyelx==0.2.0a1",
   "pydantic>=2,<3",
 ]
 

@@ -76,9 +76,10 @@ cloud dependency.
 Current `main` contains post-release Module/Driver SDK Alpha work that is not
 part of the `v0.1.0` release snapshot. Evaluate this alpha from repository
 source; it has not been published to PyPI or another package registry, and no
-compatibility guarantee is made. Package metadata on `main` still reports
-`0.1.0`; the next package, tag, and release identity is an unresolved
-`HCA-VERSION-1` decision.
+compatibility guarantee is made. HCA-VERSION-1 selected package identity
+`0.2.0a1` for current `main`. A possible future `v0.2.0a1` tag has not been
+created, no new GitHub release or registry publication exists, and stable
+`0.2.0` remains reserved for a later acceptance decision.
 
 Trusted external motor packages can integrate without editing HIYELX core by
 using the public, explicit `register_motor_driver` helper. Configuration never
@@ -106,6 +107,10 @@ uv run python scripts/verify_external_driver_install.py
 This is automated software packaging evidence only; it is not human usability
 or physical-hardware acceptance. XL430 physical acceptance and Physical
 Hardware Proof remain deferred.
+
+The alpha workflow currently installs explicitly supplied local HIYELX and
+external-driver wheels. HCA-SDK-5 is the next software gate and will evaluate
+the workflow with an external human developer.
 
 ## Pre-seed scope
 

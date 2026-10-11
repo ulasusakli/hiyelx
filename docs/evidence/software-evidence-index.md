@@ -53,9 +53,11 @@ verifier and external-driver verifier passed. GitHub Actions Quality gate
 [`38126922129`](https://github.com/ulasusakli/hiyelx/actions/runs/38126922129)
 succeeded for `d1cfb3d083836c207864c1c84e01787a9db78294`.
 
-Current package metadata on `main` still identifies the project as `0.1.0`.
-`HCA-VERSION-1` must separately decide the next package, tag, and release
-identity; this index does not resolve that decision.
+HCA-VERSION-1 selected `0.2.0a1` as the active package identity for current
+`main`. The generated external driver remains independently versioned at
+`0.1.0` and pins `hiyelx==0.2.0a1`. A possible future `v0.2.0a1` tag has not
+been created, and there is no new GitHub release or registry publication.
+Stable `0.2.0` remains reserved for a later acceptance decision.
 
 ## External developer evidence
 

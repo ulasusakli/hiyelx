@@ -27,20 +27,18 @@ DEFERRED without treating it as complete:
 
 The published `v0.1.0` Software Developer Preview remains the bounded release
 snapshot at commit `e3801ed43ec4b173dae765ac583055314defce50`. Current `main`
-contains later Module/Driver SDK Alpha software evidence. Package metadata still
-identifies the project as `0.1.0`; do not imply that the post-release SDK work is
-part of `v0.1.0` or has been published to a package registry. The next identity
-is an open `HCA-VERSION-1` decision.
+contains later Module/Driver SDK Alpha software evidence under package identity
+`0.2.0a1`. Do not imply that this work is part of `v0.1.0` or has been
+published to a package registry. A possible future `v0.2.0a1` tag and release
+require separate authorization; stable `0.2.0` remains reserved.
 
 ### NEXT
 
-1. **HCA-VERSION-1** — resolve the package, tag, and release identity for work
-   added after `v0.1.0`.
-2. **HCA-SDK-5** — run an external human developer dry run for the
+1. **HCA-SDK-5** — run an external human developer dry run for the
    Module/Driver SDK.
-3. **HCA-HW-0** — complete the hardware selection and procurement gate.
-4. Open Runtime Operations Alpha only after the version-identity and external
-   usability gates are resolved.
+2. **HCA-HW-0** — complete the hardware selection and procurement gate.
+3. Open Runtime Operations Alpha only after the external usability gate is
+   resolved.
 
 ### DONE
 
@@ -102,6 +100,11 @@ is an open `HCA-VERSION-1` decision.
   buildable external-driver wheel, clean non-editable installation,
   source-tree import rejection, and configuration to explicit registry to
   Runtime Manager to loopback gRPC to Motor execution.
+- HCA-VERSION-1 selected `0.2.0a1` as the post-`v0.1.0` HIYELX package
+  identity. Generated external drivers remain independently versioned at
+  `0.1.0` and pin `hiyelx==0.2.0a1`. No tag, release, registry publication,
+  compatibility guarantee, human-usability acceptance, or physical acceptance
+  is created by this alignment.
 
 ### DEFERRED
 

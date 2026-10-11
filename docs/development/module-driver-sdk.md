@@ -53,7 +53,7 @@ or cleanup path has been accepted.
 The generated project is an independent Python 3.12 package. Its distribution
 name is derived deterministically from the import package name (`_` becomes
 `-`), its initial version is `0.1.0`, and it declares exact compatibility with
-the current `hiyelx==0.1.0` contract. This is intentionally not a promise of
+the current `hiyelx==0.2.0a1` contract. This is intentionally not a promise of
 compatibility with future HIYELX versions.
 
 Build both wheels and install them non-editably into a clean environment:
@@ -63,9 +63,14 @@ uv build --wheel --out-dir ./wheelhouse /path/to/hiyelx
 uv build --wheel --out-dir ./wheelhouse ./acme-driver
 uv venv --python 3.12 ./clean-venv
 uv pip install --python ./clean-venv/bin/python \
-  ./wheelhouse/hiyelx-0.1.0-py3-none-any.whl \
+  ./wheelhouse/hiyelx-0.2.0a1-py3-none-any.whl \
   ./wheelhouse/acme_motor_driver-0.1.0-py3-none-any.whl
 ```
+
+The alpha is source-distributed and uses explicitly supplied local wheels. A
+possible future `v0.2.0a1` tag has not been created, and neither package has
+been published to PyPI or another registry. Stable `0.2.0` remains reserved;
+this workflow establishes no compatibility or human-usability guarantee.
 
 The trusted application must still import and register the package explicitly:
 

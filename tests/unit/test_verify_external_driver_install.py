@@ -44,7 +44,7 @@ class FakeRunner:
             wheel_name = (
                 "acme_motor_driver-0.1.0-py3-none-any.whl"
                 if source.name == "driver-source"
-                else "hiyelx-0.1.0-py3-none-any.whl"
+                else "hiyelx-0.2.0a1-py3-none-any.whl"
             )
             (output / wheel_name).write_bytes(b"wheel")
         elif "venv" in command:
@@ -111,7 +111,7 @@ def test_successful_external_driver_verification_and_cleanup(tmp_path: Path) -> 
         temporary_parent=tmp_path,
     )
 
-    assert report.hiyelx_wheel == "hiyelx-0.1.0-py3-none-any.whl"
+    assert report.hiyelx_wheel == "hiyelx-0.2.0a1-py3-none-any.whl"
     assert report.external_wheel == "acme_motor_driver-0.1.0-py3-none-any.whl"
     assert report.transcript == verify.EXPECTED_TRANSCRIPT
     assert tuple(tmp_path.iterdir()) == ()
