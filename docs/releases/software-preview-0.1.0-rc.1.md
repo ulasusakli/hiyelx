@@ -1,6 +1,6 @@
 # HIYELX Software Preview 0.1.0-rc.1 Candidate
 
-## Status
+## Historical candidate status
 
 This document is the evidence pack for **SPRC-1: Software Preview Release
 Candidate**. It describes a candidate for a bounded Software Developer Preview;
@@ -11,10 +11,25 @@ it is not a release announcement or evidence that a preview was published.
 - Candidate preparation baseline: `1b08de10a2ab2484cf7fa0bf35cb0cc41cff6945`
 - Repository: `https://github.com/ulasusakli/hiyelx`
 - Evidence index: [`../evidence/software-evidence-index.md`](../evidence/software-evidence-index.md)
-- Release status: **NOT RELEASED**
+- Candidate-time release status: **NOT RELEASED** (historical)
 
 No Git tag, GitHub Release, package publication, version bump, or physical
 hardware acceptance is created by this candidate.
+
+## Subsequent release outcome
+
+The founder subsequently accepted this pack for a bounded software-only
+release. The resulting
+[`v0.1.0` GitHub release](https://github.com/ulasusakli/hiyelx/releases/tag/v0.1.0)
+uses package version `0.1.0` and targets commit
+`e3801ed43ec4b173dae765ac583055314defce50`. It is a pre-release and is not a
+draft. No package was published to PyPI or another registry, and no binaries
+were attached to the GitHub release. Physical acceptance remained deferred.
+
+The `0.1.0-rc.1` label remains the identity of this historical evidence-pack
+revision; it was not the package version or final Git tag. HCA-SDK-1 through
+HCA-SDK-4 were added later on `main` and are not included in the `v0.1.0`
+release snapshot.
 
 ## Supported software workflow
 
@@ -116,7 +131,8 @@ The candidate keeps three kinds of evidence separate:
 
 - Physical XL430 acceptance and the full Real Reference Driver milestone are
   incomplete.
-- The Software Developer Preview has not been released.
+- At candidate time, the Software Developer Preview had not yet been released;
+  the subsequent bounded release outcome is recorded above.
 - Authentication, authorization, TLS, and remote binding are not implemented.
 - Retries, reconnect, recovery loops, watchdogs, heartbeats, background
   polling, and shared DYNAMIXEL bus management are deferred.
@@ -140,9 +156,9 @@ vendored, and no distributed third-party NOTICE content was found. A `NOTICE`
 file is therefore not required for this bounded integration; no copyright owner
 or speculative attribution was invented.
 
-The missing-license blocker is closed. The bounded Software Developer Preview
-must remain unreleased until the founder separately reviews the completed
-candidate evidence and explicitly authorizes the release operation.
+The missing-license blocker was closed. At candidate time, release still
+required separate founder review and authorization; that authorization and the
+bounded GitHub pre-release subsequently occurred as recorded above.
 
 Physical hardware acceptance is not a prerequisite for evaluating this
 software-only candidate, but it remains required for the Real Reference Driver,

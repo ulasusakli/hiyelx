@@ -23,19 +23,24 @@ DEFERRED without treating it as complete:
 
 ### NOW
 
-**Software Preview Release Candidate**
+**Hardware-Connected Developer Alpha — Module/Driver SDK (software track)**
 
-The versioned `0.1.0-rc.1` candidate pack and software evidence index are under
-final review. The founder-authorized Apache License 2.0 decision is implemented
-in the repository and package evidence. Separate founder release authorization
-remains outstanding. Do not add runtime, cloud, or hardware capability, and do
-not mark the Software Developer Preview released.
+The published `v0.1.0` Software Developer Preview remains the bounded release
+snapshot at commit `e3801ed43ec4b173dae765ac583055314defce50`. Current `main`
+contains later Module/Driver SDK Alpha software evidence. Package metadata still
+identifies the project as `0.1.0`; do not imply that the post-release SDK work is
+part of `v0.1.0` or has been published to a package registry. The next identity
+is an open `HCA-VERSION-1` decision.
 
 ### NEXT
 
-Close the Software Preview Release Candidate before opening the Software
-Developer Preview. Physical Hardware Proof remains a separate deferred gate and
-is still required before the full PRE-SEED milestone can close.
+1. **HCA-VERSION-1** — resolve the package, tag, and release identity for work
+   added after `v0.1.0`.
+2. **HCA-SDK-5** — run an external human developer dry run for the
+   Module/Driver SDK.
+3. **HCA-HW-0** — complete the hardware selection and procurement gate.
+4. Open Runtime Operations Alpha only after the version-identity and external
+   usability gates are resolved.
 
 ### DONE
 
@@ -81,6 +86,22 @@ is still required before the full PRE-SEED milestone can close.
   `docs/evidence/2026-10-08-external-developer-dry-run.md`.
 - LIC-1 Apache-2.0 License Integration established with canonical repository
   text, PEP 639 package metadata, and deterministic wheel license verification.
+- Software Developer Preview authorized and published as GitHub pre-release
+  `v0.1.0`, targeting commit
+  `e3801ed43ec4b173dae765ac583055314defce50`; no PyPI or other package-registry
+  publication occurred.
+- HCA-SDK-1/HCA-SDK-2 integrated at
+  `29551e1262e85fa0ca0c6c4a5278d64d47eef8d0`, establishing explicit external
+  motor-driver registration, strict driver-owned settings validation, and a
+  non-overwriting hardware-free scaffold.
+- HCA-SDK-3 integrated at
+  `003e765862aa2c847b0c2224e2d9748a3cdc0b8f`, adding the deterministic
+  software-only Motor compliance harness and porting checklist.
+- HCA-SDK-4 integrated at
+  `d1cfb3d083836c207864c1c84e01787a9db78294`, proving an independently
+  buildable external-driver wheel, clean non-editable installation,
+  source-tree import rejection, and configuration to explicit registry to
+  Runtime Manager to loopback gRPC to Motor execution.
 
 ### DEFERRED
 
@@ -88,12 +109,12 @@ is still required before the full PRE-SEED milestone can close.
 
 The fixed DYNAMIXEL XL430-W250-T driver implementation remains ready for its
 documented opt-in bench acceptance on model 1060 over Protocol 2.0 at 57,600
-baud. No physical acceptance was performed for RB-1. The Real Reference Driver
-milestone is not closed until that external evidence exists.
+baud. Real-driver physical acceptance is incomplete, and no physical validation
+claim exists. Software verification is not physical acceptance. The Real
+Reference Driver and full PRE-SEED hardware milestone remain incomplete until
+that external evidence exists.
 
-The Software Developer Preview may proceed using the accepted software
-evidence. The full PRE-SEED milestone remains incomplete until the separately
-evidenced physical hardware gate is complete.
+Physical Hardware Proof remains deferred and separately evidenced.
 
 ## Minimum quality gate
 

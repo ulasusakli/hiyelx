@@ -4,7 +4,13 @@ HIYELX is a hardware-independent robotics software platform for building, runnin
 
 ## Current stage
 
-**PRE-SEED — v0.1 Robot Runtime**
+**PRE-SEED — Hardware-Connected Developer Alpha, software track**
+
+The bounded [`v0.1.0` Software Developer Preview](https://github.com/ulasusakli/hiyelx/releases/tag/v0.1.0)
+was published as a GitHub pre-release from commit
+`e3801ed43ec4b173dae765ac583055314defce50`. The `0.1.0-rc.1` name identifies
+the historical evidence-pack revision; the released package and wheel version
+is `0.1.0`.
 
 The current objective is to prove the core technical thesis:
 
@@ -47,11 +53,11 @@ runbook. Its evidence template is intentionally blank until an actual session.
 The founder-accepted PRE-SEED result is recorded in the
 [`2026-10-08 external dry-run evidence`](docs/evidence/2026-10-08-external-developer-dry-run.md).
 
-The bounded Software Preview release-candidate state is documented in the
-[`0.1.0-rc.1 candidate pack`](docs/releases/software-preview-0.1.0-rc.1.md),
+The historical release-candidate state and subsequent release outcome are
+documented in the
+[`0.1.0-rc.1 evidence pack`](docs/releases/software-preview-0.1.0-rc.1.md),
 with capability-level links in the
-[`software evidence index`](docs/evidence/software-evidence-index.md). This is
-candidate evidence only; the Software Developer Preview has not been released.
+[`software evidence index`](docs/evidence/software-evidence-index.md).
 
 ## License
 
@@ -66,6 +72,13 @@ there is no simulation-control RPC, wall-clock stepping, hardware access, or
 cloud dependency.
 
 ## Module/Driver SDK Alpha
+
+Current `main` contains post-release Module/Driver SDK Alpha work that is not
+part of the `v0.1.0` release snapshot. Evaluate this alpha from repository
+source; it has not been published to PyPI or another package registry, and no
+compatibility guarantee is made. Package metadata on `main` still reports
+`0.1.0`; the next package, tag, and release identity is an unresolved
+`HCA-VERSION-1` decision.
 
 Trusted external motor packages can integrate without editing HIYELX core by
 using the public, explicit `register_motor_driver` helper. Configuration never
@@ -91,7 +104,8 @@ uv run python scripts/verify_external_driver_install.py
 ```
 
 This is automated software packaging evidence only; it is not human usability
-or physical-hardware acceptance.
+or physical-hardware acceptance. XL430 physical acceptance and Physical
+Hardware Proof remain deferred.
 
 ## Pre-seed scope
 

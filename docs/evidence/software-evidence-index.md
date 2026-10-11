@@ -2,9 +2,16 @@
 
 ## Purpose
 
-This index maps the Software Preview RC to inspectable repository evidence. It
-does not replace test results, grant physical acceptance, or declare the
-Software Developer Preview released.
+This index separates the historical `v0.1.0` Software Developer Preview release
+evidence from later Module/Driver SDK Alpha evidence on `main`, external human
+usability evidence, and deferred physical evidence. It does not replace test
+results or grant physical acceptance.
+
+The GitHub pre-release
+[`v0.1.0`](https://github.com/ulasusakli/hiyelx/releases/tag/v0.1.0) targets
+`e3801ed43ec4b173dae765ac583055314defce50`. The historical `0.1.0-rc.1`
+label belongs to the candidate evidence pack; the released package version is
+`0.1.0`. No PyPI or other package-registry publication occurred.
 
 ## Software implementation evidence
 
@@ -23,8 +30,32 @@ Software Developer Preview released.
 | DR-1 | Implemented | [`../development/clean-install-and-demo.md`](../development/clean-install-and-demo.md) | [`../../scripts/verify_clean_install.py`](../../scripts/verify_clean_install.py) and CI wheel smoke gate | [`tests/unit/test_verify_clean_install.py`](../../tests/unit/test_verify_clean_install.py) plus isolated non-editable wheel verification |
 | LIC-1 | Implemented | Founder-authorized [`Apache License 2.0`](../../LICENSE) and PEP 639 package metadata | `Apache-2.0` license expression and canonical license included in wheel metadata | Clean-install verifier rejects metadata drift, missing license files, or changed license content |
 
-All entries above are software evidence. “Implemented” does not mean released,
-physically accepted, hard real-time, or certified safe.
+The table above describes the implementation evidence available for the
+`v0.1.0` release decision. “Implemented” does not mean physically accepted,
+hard real-time, or certified safe.
+
+## Post-release Module/Driver SDK Alpha evidence on `main`
+
+The following work was integrated after the `v0.1.0` tag and is not part of
+that release snapshot. It must currently be evaluated from repository source;
+it has not been published to PyPI or another package registry and carries no
+compatibility guarantee.
+
+| Capability | Integration SHA | Evidence |
+|---|---|---|
+| HCA-SDK-1/HCA-SDK-2 | `29551e1262e85fa0ca0c6c4a5278d64d47eef8d0` | Public [`register_motor_driver`](../../src/hiyelx/sdk/motor_driver.py) helper, strict driver-owned settings validation, CLI [`scaffold`](../../src/hiyelx/sdk/scaffold.py), [SDK guide](../development/module-driver-sdk.md), [`test_motor_driver.py`](../../tests/unit/sdk/test_motor_driver.py), [`test_scaffold.py`](../../tests/unit/sdk/test_scaffold.py), and external-driver integration tests under [`tests/integration/sdk/`](../../tests/integration/sdk/) |
+| HCA-SDK-3 | `003e765862aa2c847b0c2224e2d9748a3cdc0b8f` | Software-only [`compliance.py`](../../src/hiyelx/sdk/compliance.py), [porting checklist](../development/motor-driver-porting-checklist.md), [`test_compliance.py`](../../tests/unit/sdk/test_compliance.py), and generated scaffold compliance coverage |
+| HCA-SDK-4 | `d1cfb3d083836c207864c1c84e01787a9db78294` | Independently buildable external-driver scaffold, [`verify_external_driver_install.py`](../../scripts/verify_external_driver_install.py), [`test_verify_external_driver_install.py`](../../tests/unit/test_verify_external_driver_install.py), clean non-editable installation, source-tree import rejection, and configuration to explicit registry to Runtime Manager to loopback gRPC to Motor proof |
+
+The verified HCA-SDK-4 baseline was 286 passed, 0 failed, 1 skipped physical
+test, 0 deselected, and 0 environment-blocked. Both the existing clean-install
+verifier and external-driver verifier passed. GitHub Actions Quality gate
+[`38126922129`](https://github.com/ulasusakli/hiyelx/actions/runs/38126922129)
+succeeded for `d1cfb3d083836c207864c1c84e01787a9db78294`.
+
+Current package metadata on `main` still identifies the project as `0.1.0`.
+`HCA-VERSION-1` must separately decide the next package, tag, and release
+identity; this index does not resolve that decision.
 
 ## External developer evidence
 
@@ -35,6 +66,9 @@ a fresh-clone, exact deterministic SIM transcript, and clean non-editable wheel
 installation, together with explicit evidence limitations. It closes only the
 External Developer Dry Run gate and is not evidence of physical behavior or
 broad ecosystem usability.
+
+No external human developer dry run has yet accepted the post-release
+Module/Driver SDK Alpha workflow. That separate gate is HCA-SDK-5.
 
 The reusable participant materials remain:
 
@@ -64,5 +98,10 @@ The required bench boundary and deferred limitations are documented in
 - Delivery state: [`../../PRESEED.md`](../../PRESEED.md)
 - Implementation source of truth: GitHub `main`
 - License: founder-authorized Apache License 2.0 implemented and verified in the wheel
-- Software Developer Preview: not released
-- Git tag, GitHub Release, and package publication: not created
+- Historical candidate label: `0.1.0-rc.1` evidence-pack revision
+- Software Developer Preview: published as GitHub pre-release `v0.1.0`
+- Release target: `e3801ed43ec4b173dae765ac583055314defce50`
+- Package version: `0.1.0`
+- Package registry: no PyPI or other registry publication
+- Post-release SDK Alpha: present only on later `main` commits listed above
+- Physical acceptance: deferred; no physical validation claim
