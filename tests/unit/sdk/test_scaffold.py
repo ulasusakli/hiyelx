@@ -39,6 +39,12 @@ def test_scaffold_creates_complete_deterministic_starting_point(tmp_path: Path) 
     generated_tests = (output / "tests/test_driver.py").read_text(encoding="utf-8")
     assert "run_motor_compliance" in generated_tests
     assert "software_only=True" in generated_tests
+    pyproject = (output / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'name = "acme-motor-driver"' in pyproject
+    assert 'version = "0.1.0"' in pyproject
+    assert 'requires-python = ">=3.12"' in pyproject
+    assert '"hiyelx==0.1.0"' in pyproject
+    assert 'packages = ["acme_motor_driver"]' in pyproject
     for relative_path in created:
         if relative_path.suffix == ".py":
             source = (output / relative_path).read_text(encoding="utf-8")

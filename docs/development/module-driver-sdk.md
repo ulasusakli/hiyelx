@@ -48,6 +48,49 @@ Passing the generated tests is software-contract evidence only. It is not
 evidence that a vendor transport, physical device, torque behavior, movement,
 or cleanup path has been accepted.
 
+## Build and install the external wheel
+
+The generated project is an independent Python 3.12 package. Its distribution
+name is derived deterministically from the import package name (`_` becomes
+`-`), its initial version is `0.1.0`, and it declares exact compatibility with
+the current `hiyelx==0.1.0` contract. This is intentionally not a promise of
+compatibility with future HIYELX versions.
+
+Build both wheels and install them non-editably into a clean environment:
+
+```bash
+uv build --wheel --out-dir ./wheelhouse /path/to/hiyelx
+uv build --wheel --out-dir ./wheelhouse ./acme-driver
+uv venv --python 3.12 ./clean-venv
+uv pip install --python ./clean-venv/bin/python \
+  ./wheelhouse/hiyelx-0.1.0-py3-none-any.whl \
+  ./wheelhouse/acme_motor_driver-0.1.0-py3-none-any.whl
+```
+
+The trusted application must still import and register the package explicitly:
+
+```python
+from acme_motor_driver import register_acme_motor_driver
+from hiyelx.models import ModelRegistry
+
+registry = ModelRegistry()
+register_acme_motor_driver(registry)
+```
+
+Configuration contains only `motor.acme.reference`; it does not name an import
+path or trigger package discovery. Run the repository's complete isolated
+packaging proof with:
+
+```bash
+uv run python scripts/verify_external_driver_install.py
+```
+
+The verifier builds both wheels, installs them non-editably in a fresh Python
+3.12 environment, rejects source-tree imports, and exercises configuration,
+explicit registration, Runtime Manager, and loopback gRPC. This automated
+packaging evidence is not an external-developer usability study or physical
+acceptance, and it does not publish either package.
+
 ## Run software-only compliance
 
 `MotorComplianceFixture` and `run_motor_compliance` provide a small reusable

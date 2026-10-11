@@ -83,6 +83,16 @@ hiyelx scaffold motor-driver ./acme-driver \
   --model-name motor.acme.reference
 ```
 
+Verify that the generated project builds as an independent wheel and runs
+non-editably beside the HIYELX wheel through Runtime Manager and loopback gRPC:
+
+```bash
+uv run python scripts/verify_external_driver_install.py
+```
+
+This is automated software packaging evidence only; it is not human usability
+or physical-hardware acceptance.
+
 ## Pre-seed scope
 
 - Resource / Component / Service model

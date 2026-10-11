@@ -274,12 +274,37 @@ This generated package is a hardware-free, in-memory starting point for model
 `$model_name`. It demonstrates strict settings, explicit registration, and the
 HIYELX software-only Motor compliance harness.
 
-Run the generated contract tests from this directory in an environment that
-already contains HIYELX and its development test dependencies:
+This scaffold is compatible with the current `hiyelx==0.1.0` package contract
+only. Run the generated contract tests from this directory in an environment
+that already contains HIYELX and its development test dependencies:
 
 ```bash
 pytest
 ```
+
+Build the external package as its own wheel, then install it non-editably next
+to the matching HIYELX wheel:
+
+```bash
+uv build --wheel
+uv pip install /path/to/hiyelx-0.1.0-py3-none-any.whl \
+  dist/$package_name-0.1.0-py3-none-any.whl
+```
+
+Applications must explicitly import this trusted package and register it:
+
+```python
+from $package_name import $register_function
+from hiyelx.models import ModelRegistry
+
+registry = ModelRegistry()
+$register_function(registry)
+```
+
+`runtime.yaml` contains only the stable model name; it never identifies a
+Python module or causes code loading. Clean-install evidence must confirm that
+both packages resolve from the fresh environment rather than either source
+directory.
 
 Before replacing the in-memory operations with a vendor SDK:
 
@@ -295,14 +320,34 @@ This scaffold does not authorize hardware access, torque, or motion and is not
 evidence of physical acceptance, hard-real-time behavior, or certified safety.
 Never pass a production physical backend to the compliance harness: lifecycle
 startup in a real driver may enable torque.
+Automated wheel and integration evidence is not a human usability study or
+physical acceptance.
 '''
 )
 
-_PYPROJECT = '''[tool.pytest.ini_options]
+_PYPROJECT = Template('''[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "$distribution_name"
+version = "0.1.0"
+description = "Hardware-free HIYELX motor driver scaffold"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "hiyelx==0.1.0",
+  "pydantic>=2,<3",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["$package_name"]
+
+[tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["."]
 testpaths = ["tests"]
-'''
+''')
 
 
 def create_motor_driver_scaffold(
@@ -324,6 +369,7 @@ def create_motor_driver_scaffold(
     register_function = f"register_{package_name}"
     substitutions = {
         "package_name": package_name,
+        "distribution_name": package_name.replace("_", "-"),
         "class_name": class_name,
         "register_function": register_function,
         "model_name": model_name,
@@ -331,7 +377,7 @@ def create_motor_driver_scaffold(
     }
     files = {
         Path("README.md"): _README_TEMPLATE.substitute(substitutions),
-        Path("pyproject.toml"): _PYPROJECT,
+        Path("pyproject.toml"): _PYPROJECT.substitute(substitutions),
         Path("runtime.yaml"): _CONFIG_TEMPLATE.substitute(substitutions),
         Path(package_name, "__init__.py"): _INIT_TEMPLATE.substitute(substitutions),
         Path(package_name, f"{package_name}.py"): _DRIVER_TEMPLATE.substitute(
