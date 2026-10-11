@@ -72,6 +72,14 @@ broad ecosystem usability.
 No external human developer dry run has yet accepted the post-release
 Module/Driver SDK Alpha workflow. That separate gate is HCA-SDK-5.
 
+HCA-SDK-5 participant materials are prepared in the
+[`Module/Driver SDK External Human Dry Run`](../development/module-driver-sdk-external-dry-run.md)
+and its blank
+[`evidence template`](module-driver-sdk-external-dry-run-template.md). No
+external participant session has yet been accepted. Preparation, automation,
+Codex execution, and internal rehearsal are not human-usability evidence;
+HCA-SDK-5 remains open.
+
 The reusable participant materials remain:
 
 - [`../development/external-developer-dry-run.md`](../development/external-developer-dry-run.md)

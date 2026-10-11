@@ -237,3 +237,10 @@ for an external driver.
 Use the
 [`Motor Driver Porting Checklist`](motor-driver-porting-checklist.md) before
 adapting the scaffold to alternative hardware.
+
+The separate
+[`Module/Driver SDK External Human Dry Run`](module-driver-sdk-external-dry-run.md)
+is the participant runbook for HCA-SDK-5. Preparation and internal rehearsal do
+not constitute external human-usability evidence; the gate remains open until
+an actual external participant completes the documented decision gate and the
+result is reviewed and accepted.
