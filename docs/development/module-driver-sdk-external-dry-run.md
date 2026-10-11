@@ -178,7 +178,7 @@ or warnings.
 ### 7. Inspect the generated contract
 
 ```bash
-grep -nE 'class .*Settings|def register_|_MODEL|version =|hiyelx==' \
+grep -nE 'class .*Settings|def register_|MODEL_NAME|^[[:space:]]*model:|version =|hiyelx==' \
   "$DRIVER_SOURCE/$PACKAGE_NAME/$PACKAGE_NAME.py" \
   "$DRIVER_SOURCE/$PACKAGE_NAME/__init__.py" \
   "$DRIVER_SOURCE/pyproject.toml" \
@@ -228,8 +228,20 @@ Both lines must say `import=clean` and show paths rooted at the symbolic
 
 ```bash
 cd "$HIYELX_SOURCE"
-uv run python scripts/verify_external_driver_install.py | \
-  tee "$DRY_RUN_ROOT/external-driver-verifier.txt"
+VERIFIER_OUTPUT="$DRY_RUN_ROOT/external-driver-verifier.txt"
+export VERIFIER_OUTPUT
+(
+  uv run python scripts/verify_external_driver_install.py \
+    >"$VERIFIER_OUTPUT" 2>&1
+  VERIFIER_STATUS=$?
+  cat "$VERIFIER_OUTPUT"
+  test "$VERIFIER_STATUS" -eq 0 || exit "$VERIFIER_STATUS"
+  grep -Fx 'hiyelx-wheel=hiyelx-0.2.0a1-py3-none-any.whl' "$VERIFIER_OUTPUT"
+  grep -Fx 'external-wheel=acme_motor_driver-0.1.0-py3-none-any.whl' "$VERIFIER_OUTPUT"
+  grep -Fx 'scaffold-tests=passed' "$VERIFIER_OUTPUT"
+  grep -Fx 'imports=clean' "$VERIFIER_OUTPUT"
+  grep -Fx 'external-runtime-grpc=passed' "$VERIFIER_OUTPUT"
+)
 ```
 
 Expected success signals are:
@@ -241,6 +253,9 @@ scaffold-tests=passed
 imports=clean
 external-runtime-grpc=passed
 ```
+
+If the command block returns nonzero, stop and record its exit status and
+sanitized captured output before requesting assistance.
 
 Stop the measured timer only after this command and all preceding clean
 installed-package checks succeed. Record completion time, failures, ambiguity,
