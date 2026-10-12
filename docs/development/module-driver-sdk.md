@@ -70,7 +70,8 @@ uv pip install --python ./clean-venv/bin/python \
 The alpha is source-distributed and uses explicitly supplied local wheels. A
 possible future `v0.2.0a1` tag has not been created, and neither package has
 been published to PyPI or another registry. Stable `0.2.0` remains reserved;
-this workflow establishes no compatibility or human-usability guarantee.
+the bounded HCA-SDK-5 external usability acceptance creates no broader
+compatibility guarantee or publication claim.
 
 The trusted application must still import and register the package explicitly:
 
@@ -240,7 +241,16 @@ adapting the scaffold to alternative hardware.
 
 The separate
 [`Module/Driver SDK External Human Dry Run`](module-driver-sdk-external-dry-run.md)
-is the participant runbook for HCA-SDK-5. Preparation and internal rehearsal do
-not constitute external human-usability evidence; the gate remains open until
-an actual external participant completes the documented decision gate and the
-result is reviewed and accepted.
+is the participant runbook for HCA-SDK-5. An external human participant
+completed the FIX-2 runbook at
+`9e4e1f9615da75bd4be6717277e36b8cab85542b`; Codex was the
+execution/support tool, not the participant. The founder approved the
+participant's `SUBSTANTIAL` prior-exposure exception, accepted the PASS result,
+and closed HCA-SDK-5 on 2026-10-12. See the sanitized
+[`HCA-SDK-5 evidence record`](../evidence/2026-10-12-module-driver-sdk-external-dry-run.md).
+
+This acceptance is limited to external usability of the documented local-wheel
+SDK alpha workflow. It does not establish XL430 physical acceptance, real
+reference-driver physical acceptance, Physical Hardware Proof, broad ecosystem
+compatibility, package publication, hard-real-time behavior, or certified
+safety.

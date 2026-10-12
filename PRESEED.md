@@ -23,7 +23,7 @@ DEFERRED without treating it as complete:
 
 ### NOW
 
-**Hardware-Connected Developer Alpha — Module/Driver SDK (software track)**
+**Hardware-Connected Developer Alpha — post-SDK handoff**
 
 The published `v0.1.0` Software Developer Preview remains the bounded release
 snapshot at commit `e3801ed43ec4b173dae765ac583055314defce50`. Current `main`
@@ -32,12 +32,14 @@ contains later Module/Driver SDK Alpha software evidence under package identity
 published to a package registry. A possible future `v0.2.0a1` tag and release
 require separate authorization; stable `0.2.0` remains reserved.
 
+HCA-SDK-5 external usability acceptance is complete. The next gate is
+HCA-HW-0 hardware selection and procurement; no Runtime Operations Alpha work
+opens before that hardware-readiness boundary is resolved.
+
 ### NEXT
 
-1. **HCA-SDK-5** — run an external human developer dry run for the
-   Module/Driver SDK.
-2. **HCA-HW-0** — complete the hardware selection and procurement gate.
-3. Open Runtime Operations Alpha only after the external usability gate is
+1. **HCA-HW-0** — complete the hardware selection and procurement gate.
+2. Open Runtime Operations Alpha only after the hardware-readiness boundary is
    resolved.
 
 ### DONE
@@ -103,8 +105,21 @@ require separate authorization; stable `0.2.0` remains reserved.
 - HCA-VERSION-1 selected `0.2.0a1` as the post-`v0.1.0` HIYELX package
   identity. Generated external drivers remain independently versioned at
   `0.1.0` and pin `hiyelx==0.2.0a1`. No tag, release, registry publication,
-  compatibility guarantee, human-usability acceptance, or physical acceptance
-  is created by this alignment.
+  compatibility guarantee, or physical acceptance is created by this
+  alignment.
+- HCA-SDK-5 was founder-accepted and closed on 2026-10-12 from an external
+  human participant session at
+  `9e4e1f9615da75bd4be6717277e36b8cab85542b`. Codex served as an
+  execution/support tool, not the participant. The founder approved the
+  participant's `SUBSTANTIAL` prior-exposure exception. Fresh-clone SHA
+  equality, interactive zsh validation, the exact six-file scaffold, five
+  generated tests, Ruff, Pyright, both wheel builds, clean imports, and all
+  five external-driver verifier signals passed with 0 assistance requests,
+  0 interventions, and 0 environment blockers in 22 minutes 48 seconds.
+  Evidence is recorded in the
+  [`HCA-SDK-5 evidence record`](docs/evidence/2026-10-12-module-driver-sdk-external-dry-run.md).
+  This closes external SDK usability only; it does not close XL430 or real
+  reference-driver physical acceptance or Physical Hardware Proof.
 
 ### DEFERRED
 

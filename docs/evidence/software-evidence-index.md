@@ -46,6 +46,7 @@ compatibility guarantee.
 | HCA-SDK-1/HCA-SDK-2 | `29551e1262e85fa0ca0c6c4a5278d64d47eef8d0` | Public [`register_motor_driver`](../../src/hiyelx/sdk/motor_driver.py) helper, strict driver-owned settings validation, CLI [`scaffold`](../../src/hiyelx/sdk/scaffold.py), [SDK guide](../development/module-driver-sdk.md), [`test_motor_driver.py`](../../tests/unit/sdk/test_motor_driver.py), [`test_scaffold.py`](../../tests/unit/sdk/test_scaffold.py), and external-driver integration tests under [`tests/integration/sdk/`](../../tests/integration/sdk/) |
 | HCA-SDK-3 | `003e765862aa2c847b0c2224e2d9748a3cdc0b8f` | Software-only [`compliance.py`](../../src/hiyelx/sdk/compliance.py), [porting checklist](../development/motor-driver-porting-checklist.md), [`test_compliance.py`](../../tests/unit/sdk/test_compliance.py), and generated scaffold compliance coverage |
 | HCA-SDK-4 | `d1cfb3d083836c207864c1c84e01787a9db78294` | Independently buildable external-driver scaffold, [`verify_external_driver_install.py`](../../scripts/verify_external_driver_install.py), [`test_verify_external_driver_install.py`](../../tests/unit/test_verify_external_driver_install.py), clean non-editable installation, source-tree import rejection, and configuration to explicit registry to Runtime Manager to loopback gRPC to Motor proof |
+| HCA-SDK-5 | `9e4e1f9615da75bd4be6717277e36b8cab85542b` participant baseline | Founder-accepted external human usability PASS recorded in [`2026-10-12-module-driver-sdk-external-dry-run.md`](2026-10-12-module-driver-sdk-external-dry-run.md); Codex was the execution/support tool, the `SUBSTANTIAL` prior-exposure exception was approved, and no physical acceptance is implied |
 
 The verified HCA-SDK-4 baseline was 286 passed, 0 failed, 1 skipped physical
 test, 0 deselected, and 0 environment-blocked. Both the existing clean-install
@@ -69,16 +70,26 @@ installation, together with explicit evidence limitations. It closes only the
 External Developer Dry Run gate and is not evidence of physical behavior or
 broad ecosystem usability.
 
-No external human developer dry run has yet accepted the post-release
-Module/Driver SDK Alpha workflow. That separate gate is HCA-SDK-5.
+HCA-SDK-5 is recorded separately in
+[`2026-10-12-module-driver-sdk-external-dry-run.md`](2026-10-12-module-driver-sdk-external-dry-run.md).
+The founder accepted the bounded session at commit
+`9e4e1f9615da75bd4be6717277e36b8cab85542b` as external-human evidence and
+closed HCA-SDK-5. The participant was a real external human; Codex served as an
+execution/support tool. The participant reported `SUBSTANTIAL` prior HIYELX
+exposure, and the founder explicitly approved that eligibility exception.
 
-HCA-SDK-5 participant materials are prepared in the
+The accepted session preserved fresh-clone SHA equality, interactive zsh
+validation, the exact six-file scaffold, five generated tests, Ruff, Pyright,
+both wheel builds, clean imports, and all five external-driver verifier signals.
+Assistance requests, facilitator interventions, and environment blockers were
+all zero; total measured duration was 22 minutes 48 seconds. No new P0, P1, or
+P2 finding was reported.
+
+The reusable HCA-SDK-5 participant materials remain available in the
 [`Module/Driver SDK External Human Dry Run`](../development/module-driver-sdk-external-dry-run.md)
 and its blank
-[`evidence template`](module-driver-sdk-external-dry-run-template.md). No
-external participant session has yet been accepted. Preparation, automation,
-Codex execution, and internal rehearsal are not human-usability evidence;
-HCA-SDK-5 remains open.
+[`evidence template`](module-driver-sdk-external-dry-run-template.md). Their
+continued presence does not reopen the accepted gate.
 
 The reusable participant materials remain:
 
@@ -114,4 +125,5 @@ The required bench boundary and deferred limitations are documented in
 - Package version: `0.1.0`
 - Package registry: no PyPI or other registry publication
 - Post-release SDK Alpha: present only on later `main` commits listed above
+- HCA-SDK-5 external usability: founder-accepted and closed on 2026-10-12
 - Physical acceptance: deferred; no physical validation claim

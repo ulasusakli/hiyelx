@@ -104,13 +104,17 @@ non-editably beside the HIYELX wheel through Runtime Manager and loopback gRPC:
 uv run python scripts/verify_external_driver_install.py
 ```
 
-This is automated software packaging evidence only; it is not human usability
-or physical-hardware acceptance. XL430 physical acceptance and Physical
-Hardware Proof remain deferred.
+The automated verifier is software packaging evidence only; by itself it is
+not human-usability or physical-hardware acceptance. The separate HCA-SDK-5
+external participant session was founder-accepted on 2026-10-12 at commit
+`9e4e1f9615da75bd4be6717277e36b8cab85542b`. Its sanitized evidence and bounded
+limitations are recorded in the
+[`Module/Driver SDK external dry-run evidence`](docs/evidence/2026-10-12-module-driver-sdk-external-dry-run.md).
 
-The alpha workflow currently installs explicitly supplied local HIYELX and
-external-driver wheels. HCA-SDK-5 is the next software gate and will evaluate
-the workflow with an external human developer.
+HCA-SDK-5 closes only the bounded external usability gate for the local-wheel
+alpha workflow. HCA-HW-0 is next. XL430 physical acceptance, real reference
+driver physical acceptance, and Physical Hardware Proof remain deferred;
+Runtime Operations Alpha remains after the hardware-readiness boundary.
 
 ## Pre-seed scope
 
