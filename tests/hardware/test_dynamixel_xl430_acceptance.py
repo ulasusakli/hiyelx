@@ -10,7 +10,15 @@ from pathlib import Path
 import grpc
 import pytest
 
-from hiyelx.config import load_config
+from hiyelx.acceptance import (
+    PHYSICAL_OPERATION_CONSENT,
+    XL430_W250_T_ACCEPTANCE_PROFILE,
+    HardwareAcceptanceConfig,
+    HardwareAcceptanceError,
+    load_hardware_acceptance_config,
+    preflight_hardware_acceptance,
+)
+from hiyelx.config import RuntimeConfig
 from hiyelx.drivers.dynamixel import register_dynamixel_xl430_motor
 from hiyelx.models import ModelRegistry
 from hiyelx.rpc import MotorGrpcServer, RpcTransportState
@@ -21,46 +29,66 @@ pytestmark = pytest.mark.hardware
 MOVEMENT_SECONDS = 0.25
 
 
-def _require_physical_opt_in(pytestconfig: pytest.Config) -> str:
+def _require_physical_opt_in(
+    pytestconfig: pytest.Config,
+) -> tuple[HardwareAcceptanceConfig, ModelRegistry]:
     marker_expression = pytestconfig.getoption("markexpr")
     if marker_expression != "hardware":
         pytest.skip("physical test requires the explicit '-m hardware' selection")
-    if os.environ.get("HIYELX_RUN_HARDWARE") != "1":
-        pytest.skip("set HIYELX_RUN_HARDWARE=1 to authorize physical motion")
+    consent = os.environ.get("HIYELX_PHYSICAL_OPERATION_CONSENT")
+    if consent != PHYSICAL_OPERATION_CONSENT:
+        pytest.skip("set the exact physical-operation consent value")
     if os.environ.get("HIYELX_HARDWARE_SECURED_NO_LOAD") != "1":
         pytest.skip("confirm a secured, unloaded actuator and accessible power cutoff")
-    device = os.environ.get("HIYELX_DYNAMIXEL_DEVICE", "")
-    if not device.strip():
-        pytest.skip("set HIYELX_DYNAMIXEL_DEVICE to the external serial-device path")
-    return device
+    config_value = os.environ.get("HIYELX_HARDWARE_ACCEPTANCE_CONFIG", "")
+    if not config_value.strip():
+        pytest.skip("set the external hardware-acceptance configuration path")
+    try:
+        config = load_hardware_acceptance_config(Path(config_value))
+        registry = ModelRegistry()
+        register_dynamixel_xl430_motor(registry)
+        plan = preflight_hardware_acceptance(
+            config,
+            registry,
+            XL430_W250_T_ACCEPTANCE_PROFILE,
+            physical_operation_consent=consent,
+        )
+    except HardwareAcceptanceError:
+        pytest.fail("hardware acceptance preflight failed", pytrace=False)
+    if not plan.physical_operation_authorized:
+        pytest.skip("acceptance configuration does not authorize movement")
+    return config, registry
 
 
 @pytest.mark.asyncio
 async def test_physical_xl430_through_runtime_and_grpc(
     pytestconfig: pytest.Config,
-    tmp_path: Path,
 ) -> None:
     """Run the bounded real-motor acceptance path only after explicit consent."""
-    device = _require_physical_opt_in(pytestconfig)
-    config_path = tmp_path / "physical-xl430.yaml"
-    config_path.write_text(
-        f"""\
-schema_version: "1"
-resources:
-  - identity: reference_motor
-    model: motor.dynamixel.xl430_w250_t
-    settings:
-      device: {device!r}
-      motor_id: 1
-      baud_rate: 57600
-      max_abs_velocity_rad_s: 0.3
-""",
-        encoding="utf-8",
+    acceptance, registry = _require_physical_opt_in(pytestconfig)
+    maximum_velocity = max(
+        abs(acceptance.command_bounds.minimum_rad_s),
+        abs(acceptance.command_bounds.maximum_rad_s),
     )
-
-    registry = ModelRegistry()
-    register_dynamixel_xl430_motor(registry)
-    runtime = RuntimeManager(load_config(config_path), registry)
+    runtime_config = RuntimeConfig.model_validate(
+        {
+            "schema_version": "1",
+            "resources": [
+                {
+                    "identity": "reference_motor",
+                    "model": acceptance.driver_identity,
+                    "settings": {
+                        "device": acceptance.transport_identifier,
+                        "motor_id": acceptance.device_id,
+                        "baud_rate": acceptance.baud_rate,
+                        "max_abs_velocity_rad_s": maximum_velocity,
+                    },
+                }
+            ],
+        },
+        strict=True,
+    )
+    runtime = RuntimeManager(runtime_config, registry)
     server = MotorGrpcServer(runtime)
     channel: grpc.aio.Channel | None = None
     client: motor_pb2_grpc.MotorServiceStub | None = None
@@ -75,7 +103,10 @@ resources:
         assert [motor.identity for motor in listing.motors] == ["reference_motor"]
         await client.GetMotorState(motor_pb2.GetMotorStateRequest(identity="reference_motor"))
 
-        for velocity in (0.3, -0.3):
+        for velocity in (
+            acceptance.command_bounds.maximum_rad_s,
+            acceptance.command_bounds.minimum_rad_s,
+        ):
             await client.ApplyMotorCommand(
                 motor_pb2.ApplyMotorCommandRequest(
                     identity="reference_motor",

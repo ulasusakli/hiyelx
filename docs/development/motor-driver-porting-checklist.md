@@ -77,3 +77,25 @@ driver or authorize hardware access.
 Passing software compliance does not establish hard-real-time behavior, an
 emergency stop, certified functional safety, broad hardware compatibility, or
 physical acceptance.
+
+## Alternative reference-hardware intake
+
+Before an alternative motor or adapter can enter physical acceptance, record:
+
+- manufacturer and exact model;
+- host adapter or transport;
+- supported protocol;
+- Python dependency and license;
+- position, velocity, and torque capabilities;
+- stop and torque-disable semantics;
+- device-identification method;
+- required power and wiring information;
+- testable command bounds;
+- availability of a non-hardware fake; and
+- physical acceptance owner.
+
+Reuse the generic workflow in
+[`../hardware/hardware-acceptance-readiness.md`](../hardware/hardware-acceptance-readiness.md),
+but keep vendor-specific identification, transport, torque, and cleanup behavior
+inside the new driver/profile. Do not implement or claim an alternative
+physical backend until these inputs and its separate evidence plan are reviewed.

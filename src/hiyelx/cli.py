@@ -11,7 +11,14 @@ from pathlib import Path
 
 import grpc
 
+from hiyelx.acceptance import (
+    XL430_W250_T_ACCEPTANCE_PROFILE,
+    HardwareAcceptanceError,
+    load_hardware_acceptance_config,
+    preflight_hardware_acceptance,
+)
 from hiyelx.config import ConfigurationError, RuntimeConfig, load_config
+from hiyelx.drivers.dynamixel import register_dynamixel_xl430_motor
 from hiyelx.models import ModelRegistry
 from hiyelx.resources import ResourceIdentity
 from hiyelx.rpc import MotorGrpcServer, RpcTransportState
@@ -51,6 +58,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             package_name=arguments.package_name,
             model_name=arguments.model_name,
         )
+    if arguments.command == "hardware" and arguments.hardware == "preflight":
+        return _hardware_preflight(
+            arguments.path,
+            physical_operation_consent=arguments.physical_consent,
+        )
 
     parser.error("a command is required")
 
@@ -84,6 +96,18 @@ def _parser() -> argparse.ArgumentParser:
     motor_driver.add_argument("output", type=Path)
     motor_driver.add_argument("--package-name", required=True)
     motor_driver.add_argument("--model-name", required=True)
+
+    hardware = commands.add_parser(
+        "hardware",
+        help="run hardware-acceptance readiness workflows",
+    )
+    hardware_commands = hardware.add_subparsers(dest="hardware")
+    preflight = hardware_commands.add_parser(
+        "preflight",
+        help="validate and print a sanitized hardware-acceptance plan",
+    )
+    preflight.add_argument("path", type=Path)
+    preflight.add_argument("--physical-consent")
     return parser
 
 
@@ -116,6 +140,30 @@ def _scaffold_motor_driver(
     print(f"package={package_name}")
     print(f"model={model_name}")
     print(f"files={len(created)}")
+    return SUCCESS
+
+
+def _hardware_preflight(
+    path: Path,
+    *,
+    physical_operation_consent: str | None,
+) -> int:
+    """Print a deterministic plan without constructing a motor or transport."""
+    try:
+        config = load_hardware_acceptance_config(path)
+        registry = ModelRegistry()
+        register_dynamixel_xl430_motor(registry)
+        plan = preflight_hardware_acceptance(
+            config,
+            registry,
+            XL430_W250_T_ACCEPTANCE_PROFILE,
+            physical_operation_consent=physical_operation_consent,
+        )
+    except HardwareAcceptanceError:
+        print("error: hardware acceptance preflight failed", file=sys.stderr)
+        return FAILURE
+    for line in plan.evidence_lines():
+        print(line)
     return SUCCESS
 
 

@@ -103,6 +103,13 @@ acceptance test. Ordinary quality gates do not select that test, and SPRC-1 does
 not open a serial device, enable torque, command physical movement, or claim a
 hardware result.
 
+HCA-HW-0 software readiness is documented in
+[`../hardware/hardware-acceptance-readiness.md`](../hardware/hardware-acceptance-readiness.md).
+The typed preflight resolves registration and compatibility without driver
+construction, while the acceptance sequence is verified only with fakes. The
+blank [`physical acceptance evidence template`](hardware-acceptance-template.md)
+does not claim that a physical session occurred.
+
 No accepted evidence currently closes:
 
 - Real Reference Driver physical acceptance;

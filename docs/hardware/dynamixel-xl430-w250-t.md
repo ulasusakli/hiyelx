@@ -93,24 +93,31 @@ order. There is no retry, reconnect, reboot, watchdog, or recovery policy.
 ## Physical acceptance
 
 Ordinary `uv run pytest` never authorizes hardware I/O. The physical test
-requires all three external opt-ins and explicit marker selection:
+requires exact marker selection, exact physical-operation consent, secured
+no-load confirmation, and an operator-owned typed acceptance configuration:
 
 ```bash
-HIYELX_RUN_HARDWARE=1 \
+HIYELX_PHYSICAL_OPERATION_CONSENT=I_ACCEPT_PHYSICAL_OPERATION \
 HIYELX_HARDWARE_SECURED_NO_LOAD=1 \
-HIYELX_DYNAMIXEL_DEVICE=/dev/tty.usbserial-REFERENCE \
+HIYELX_HARDWARE_ACCEPTANCE_CONFIG=./operator-acceptance.yaml \
 uv run pytest -m hardware tests/hardware/test_dynamixel_xl430_acceptance.py
 ```
+
+The external configuration must pass the documented
+[`hardware acceptance readiness`](hardware-acceptance-readiness.md) preflight,
+authorize movement, declare `XL430-W250-T`, use an accepted ID and baud rate,
+and keep both configured command bounds within -0.5 through +0.5 rad/s. Do not
+commit its real transport identifier.
 
 Before running, confirm the actuator is secured, unloaded, and the physical
 power cutoff is accessible. The test identifies model 1060, starts the real
 Runtime Manager and loopback gRPC server, lists and reads the motor, commands
-at most +0.3 rad/s and -0.3 rad/s for a nominal 0.25 seconds each (below the
-0.5-second acceptance ceiling) with a zero command after each movement, then
-independently stops transport and runtime. Its `finally`
-path again attempts zero velocity, transport cleanup, torque disable, and port
-closure. After completion, verify torque is disabled by confirming the unloaded
-actuator can be moved freely, then remove motor power.
+the configured positive and negative bounds for a nominal 0.25 seconds each
+with a zero command after each movement, then independently stops transport and
+runtime. Its `finally` path again attempts zero velocity, transport cleanup,
+torque disable, and port closure. After completion, verify torque is disabled
+by confirming the unloaded actuator can be moved freely, then remove motor
+power and complete the blank evidence template.
 
 ## Troubleshooting
 

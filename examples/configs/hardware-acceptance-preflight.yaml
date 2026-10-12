@@ -1,0 +1,12 @@
+schema_version: "1"
+driver_identity: motor.dynamixel.xl430_w250_t
+expected_motor_model: XL430-W250-T
+transport_identifier: operator-supplied-transport
+device_id: 1
+baud_rate: 57600
+command_bounds:
+  minimum_rad_s: -0.3
+  maximum_rad_s: 0.3
+operation_deadline_seconds: 2.0
+movement_authorized: false
+evidence_session_id: hca-hw0-preflight

@@ -26,6 +26,7 @@ def test_cli_help_and_demo_dispatch(
     assert "validate-config" in help_output
     assert "demo" in help_output
     assert "scaffold" in help_output
+    assert "hardware" in help_output
 
     async def fake_demo() -> tuple[str, ...]:
         return ("demo=dispatched",)
@@ -59,6 +60,59 @@ def test_validate_config_failure_is_sanitized(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == "error: configuration is invalid\n"
+    assert "top-secret" not in captured.err
+    assert str(config_path) not in captured.err
+
+
+def test_hardware_preflight_is_deterministic_and_does_not_expose_transport(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "hardware-acceptance.yaml"
+    config_path.write_text(
+        """\
+schema_version: "1"
+driver_identity: motor.dynamixel.xl430_w250_t
+expected_motor_model: XL430-W250-T
+transport_identifier: private-device-credential-token
+device_id: 1
+baud_rate: 57600
+command_bounds:
+  minimum_rad_s: -0.3
+  maximum_rad_s: 0.3
+operation_deadline_seconds: 2.0
+movement_authorized: false
+evidence_session_id: hca-hw0-preflight
+""",
+        encoding="utf-8",
+    )
+
+    assert cli.main(["hardware", "preflight", str(config_path)]) == cli.SUCCESS
+    first = capsys.readouterr()
+    assert cli.main(["hardware", "preflight", str(config_path)]) == cli.SUCCESS
+    second = capsys.readouterr()
+
+    assert first.out == second.out
+    assert first.err == ""
+    assert "acceptance-preflight=valid" in first.out
+    assert "physical-operation-authorized=false" in first.out
+    assert "device-operations=none" in first.out
+    assert "private-device" not in first.out
+    assert "credential" not in first.out
+    assert "token" not in first.out
+
+
+def test_hardware_preflight_failure_is_sanitized(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = tmp_path / "secret-hardware-config.yaml"
+    config_path.write_text("credential: top-secret", encoding="utf-8")
+
+    assert cli.main(["hardware", "preflight", str(config_path)]) == cli.FAILURE
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "error: hardware acceptance preflight failed\n"
     assert "top-secret" not in captured.err
     assert str(config_path) not in captured.err
 

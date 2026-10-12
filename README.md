@@ -112,9 +112,13 @@ limitations are recorded in the
 [`Module/Driver SDK external dry-run evidence`](docs/evidence/2026-10-12-module-driver-sdk-external-dry-run.md).
 
 HCA-SDK-5 closes only the bounded external usability gate for the local-wheel
-alpha workflow. HCA-HW-0 is next. XL430 physical acceptance, real reference
-driver physical acceptance, and Physical Hardware Proof remain deferred;
-Runtime Operations Alpha remains after the hardware-readiness boundary.
+alpha workflow. HCA-HW-0 is now the active software-side hardware-readiness
+task. Its strict, device-free preflight and fake-verifiable cleanup harness are
+documented in
+[`Hardware acceptance readiness`](docs/hardware/hardware-acceptance-readiness.md).
+XL430 physical acceptance, real reference-driver physical acceptance, and
+Physical Hardware Proof remain pending; Runtime Operations Alpha remains after
+the hardware-readiness boundary.
 
 ## Pre-seed scope
 
