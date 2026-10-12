@@ -67,21 +67,28 @@ cd "$HIYELX_SOURCE"
 printf 'Intended commit SHA supplied by facilitator: '
 IFS= read -r INTENDED_SHA
 export INTENDED_SHA
-test "${#INTENDED_SHA}" -eq 40 || {
-  printf 'error: intended SHA must have 40 characters\n' >&2
-  exit 1
-}
-case "$INTENDED_SHA" in
-  *[!0-9a-f]*) printf 'error: intended SHA must be lowercase hexadecimal\n' >&2; exit 1 ;;
-esac
+if test "$(printf '%s' "$INTENDED_SHA" | LC_ALL=C wc -l | tr -d '[:space:]')" -eq 0 &&
+  printf '%s\n' "$INTENDED_SHA" |
+    LC_ALL=C grep -Eq '^[0-9a-f]{40}$'
+then
+  :
+else
+  printf 'error: intended SHA must be 40 lowercase hexadecimal characters\n' >&2
+  false
+fi
+```
+
+If the validation block returns nonzero, stop and record the failure.
+
+```bash
 git rev-parse HEAD | tee "$DRY_RUN_ROOT/observed-head.txt"
 git rev-parse origin/main | tee "$DRY_RUN_ROOT/observed-origin-main.txt"
 test "$(git rev-parse HEAD)" = "$INTENDED_SHA"
 test "$(git rev-parse origin/main)" = "$INTENDED_SHA"
 ```
 
-If either `test` command fails, stop and record the mismatch. Do not silently
-switch revisions.
+If either `test` command returns nonzero, stop and record the mismatch. Do not
+silently switch revisions.
 
 ### 2. Record prerequisites and install the locked environment
 
@@ -96,9 +103,21 @@ uv sync --locked --dev
 ```bash
 printf 'Anonymous lowercase alphanumeric participant code: '
 IFS= read -r PARTICIPANT_CODE
-case "$PARTICIPANT_CODE" in
-  ''|*[!a-z0-9]*) printf 'error: use lowercase letters and digits only\n' >&2; exit 1 ;;
-esac
+if test "$(printf '%s' "$PARTICIPANT_CODE" | LC_ALL=C wc -l | tr -d '[:space:]')" -eq 0 &&
+  printf '%s\n' "$PARTICIPANT_CODE" |
+    LC_ALL=C grep -Eq '^[a-z0-9]+$'
+then
+  :
+else
+  printf 'error: use one or more lowercase letters and digits only\n' >&2
+  false
+fi
+```
+
+If the validation block returns nonzero, stop and record the failure before
+continuing.
+
+```bash
 PACKAGE_NAME="participant_${PARTICIPANT_CODE}_motor_driver"
 MODEL_NAME="motor.participant.${PARTICIPANT_CODE}"
 DRIVER_SOURCE="$DRY_RUN_ROOT/participant-driver"
