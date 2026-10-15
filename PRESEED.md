@@ -23,7 +23,7 @@ DEFERRED without treating it as complete:
 
 ### NOW
 
-**HCA-HW-0 — hardware acceptance readiness**
+**Runtime Operations Alpha — RTO-1**
 
 The published `v0.1.0` Software Developer Preview remains the bounded release
 snapshot at commit `e3801ed43ec4b173dae765ac583055314defce50`. Current `main`
@@ -32,21 +32,16 @@ contains later Module/Driver SDK Alpha software evidence under package identity
 published to a package registry. A possible future `v0.2.0a1` tag and release
 require separate authorization; stable `0.2.0` remains reserved.
 
-HCA-SDK-5 external usability acceptance remains complete. HCA-HW-0 is active:
-establish the typed, explicit-opt-in, device-free preflight and fake-verifiable
-acceptance sequence before approving any physical bench session. No Runtime
-Operations Alpha work opens before this hardware-readiness boundary is
-resolved.
+RTO-1 establishes immutable deterministic local runtime snapshots, ordered
+resource lifecycle and health state, startup ownership, and sanitized
+instance-local lifecycle events. It adds only an explicit local façade for
+start, safe-stop, shutdown, and read-only observation.
 
 ### NEXT
 
-1. Review HCA-HW-0 software readiness, then select and procure the exact motor,
-   adapter, power, wiring, operator, and physical acceptance owner.
-2. Run a separately authorized physical acceptance session; XL430 or an
-   alternative reference driver remains pending until that evidence is
-   reviewed.
-3. Open Runtime Operations Alpha only after the hardware-readiness boundary is
-   resolved.
+1. RTO-2 Local Runtime Start/Stop CLI.
+2. RTO-3 Local Events and Run History.
+3. Simulation/Preview Alpha.
 
 ### DONE
 
@@ -126,10 +121,14 @@ resolved.
   [`HCA-SDK-5 evidence record`](docs/evidence/2026-10-12-module-driver-sdk-external-dry-run.md).
   This closes external SDK usability only; it does not close XL430 or real
   reference-driver physical acceptance or Physical Hardware Proof.
+- HCA-HW-0 software readiness integrated at
+  `535c14cfc9ec1cc819bb86d4ddf31a9d7fe82569`, establishing the typed,
+  explicit-opt-in, device-free preflight and fake-verifiable acceptance
+  sequence. This is software readiness only and is not physical acceptance.
 
-### DEFERRED
+### PARALLEL / DEFERRED
 
-**Physical Hardware Proof**
+**Physical hardware acceptance and Physical Hardware Proof**
 
 The fixed DYNAMIXEL XL430-W250-T driver implementation remains ready for its
 documented opt-in bench acceptance on model 1060 over Protocol 2.0 at 57,600
@@ -139,6 +138,11 @@ Reference Driver and full PRE-SEED hardware milestone remain incomplete until
 that external evidence exists.
 
 Physical Hardware Proof remains deferred and separately evidenced.
+
+Physical evidence does not block Runtime Operations, Simulation/Preview,
+Studio, Blocks, Code, Assisted Setup, Trigger, Job, Camera/Vision, Motion, or
+Autonomy development. Physical validation claims still require separate
+reviewed evidence and cannot be inferred from software verification.
 
 The software-only HCA-HW-0 readiness boundary is documented in
 [`docs/hardware/hardware-acceptance-readiness.md`](docs/hardware/hardware-acceptance-readiness.md).

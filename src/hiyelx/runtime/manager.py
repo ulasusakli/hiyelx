@@ -27,7 +27,12 @@ from hiyelx.runtime.errors import (
     ShutdownFailure,
     UnknownOwnedResourceError,
 )
-from hiyelx.runtime.events import RuntimeEvent, RuntimeEventOutcome, RuntimeEventSink
+from hiyelx.runtime.events import (
+    RuntimeEvent,
+    RuntimeEventOperation,
+    RuntimeEventOutcome,
+    RuntimeEventSink,
+)
 from hiyelx.runtime.planning import plan_startup
 from hiyelx.runtime.state import RuntimeManagerOperation, RuntimeManagerState
 
@@ -81,6 +86,15 @@ class RuntimeManager:
         return self._successful_start_order
 
     @property
+    def active_resource_order(self) -> tuple[ResourceIdentity, ...]:
+        """Return successfully started resources that are still running."""
+        return tuple(
+            identity
+            for identity in self._active_started
+            if self._resources[identity].state is LifecycleState.RUNNING
+        )
+
+    @property
     def owned_resources(self) -> Mapping[ResourceIdentity, Resource]:
         """Return an immutable mapping snapshot of all owned resources."""
         return self._owned_resources
@@ -95,17 +109,39 @@ class RuntimeManager:
     async def start(self) -> None:
         """Start all resources sequentially in dependency order."""
         self._require_state(RuntimeManagerOperation.START, RuntimeManagerState.NEW)
+        self._emit(
+            operation=RuntimeEventOperation.RUNTIME_START,
+            outcome=RuntimeEventOutcome.REQUESTED,
+            summary="runtime start requested",
+        )
         self._state = RuntimeManagerState.STARTING
         started: list[ResourceIdentity] = []
 
         for identity in self._startup_plan:
             resource = self._resources[identity]
+            self._emit_resource(
+                resource,
+                operation=RuntimeEventOperation.RESOURCE_START,
+                outcome=RuntimeEventOutcome.ATTEMPTED,
+                summary="resource start attempted",
+            )
             try:
                 await resource.start()
             except Exception as error:
+                self._emit_resource(
+                    resource,
+                    operation=RuntimeEventOperation.RESOURCE_START,
+                    outcome=RuntimeEventOutcome.FAILED,
+                    summary="resource start failed",
+                )
                 rollback_failures = await self._rollback(started)
                 self._active_started = ()
                 self._state = RuntimeManagerState.FAILED
+                self._emit(
+                    operation=RuntimeEventOperation.RUNTIME_FAILED,
+                    outcome=RuntimeEventOutcome.FAILED,
+                    summary="runtime failed during startup",
+                )
                 raise RuntimeStartupError(
                     identity,
                     error,
@@ -114,27 +150,73 @@ class RuntimeManager:
             started.append(identity)
             self._successful_start_order = tuple(started)
             self._active_started = tuple(started)
+            self._emit_resource(
+                resource,
+                operation=RuntimeEventOperation.RESOURCE_START,
+                outcome=RuntimeEventOutcome.SUCCEEDED,
+                summary="resource start succeeded",
+            )
 
         self._state = RuntimeManagerState.RUNNING
+        self._emit(
+            operation=RuntimeEventOperation.RUNTIME_RUNNING,
+            outcome=RuntimeEventOutcome.SUCCEEDED,
+            summary="runtime running",
+        )
 
     async def shutdown(self) -> None:
         """Stop every started resource sequentially in reverse startup order."""
         self._require_state(RuntimeManagerOperation.SHUTDOWN, RuntimeManagerState.RUNNING)
+        self._emit(
+            operation=RuntimeEventOperation.RUNTIME_SHUTDOWN,
+            outcome=RuntimeEventOutcome.REQUESTED,
+            summary="runtime shutdown requested",
+        )
         self._state = RuntimeManagerState.STOPPING
         failures: list[ShutdownFailure] = []
 
         for identity in reversed(self._active_started):
+            resource = self._resources[identity]
+            self._emit_resource(
+                resource,
+                operation=RuntimeEventOperation.RESOURCE_SHUTDOWN,
+                outcome=RuntimeEventOutcome.ATTEMPTED,
+                summary="resource shutdown attempted",
+            )
             try:
-                await self._resources[identity].shutdown()
+                await resource.shutdown()
             except Exception as error:
                 failures.append(ShutdownFailure(identity, error))
+                self._emit_resource(
+                    resource,
+                    operation=RuntimeEventOperation.RESOURCE_SHUTDOWN,
+                    outcome=RuntimeEventOutcome.FAILED,
+                    summary="resource shutdown failed",
+                )
+            else:
+                self._emit_resource(
+                    resource,
+                    operation=RuntimeEventOperation.RESOURCE_SHUTDOWN,
+                    outcome=RuntimeEventOutcome.SUCCEEDED,
+                    summary="resource shutdown succeeded",
+                )
 
         self._active_started = ()
         if failures:
             self._state = RuntimeManagerState.FAILED
+            self._emit(
+                operation=RuntimeEventOperation.RUNTIME_FAILED,
+                outcome=RuntimeEventOutcome.FAILED,
+                summary="runtime failed during shutdown",
+            )
             shutdown_error = RuntimeShutdownError(tuple(failures))
             raise shutdown_error from failures[0].error
         self._state = RuntimeManagerState.STOPPED
+        self._emit(
+            operation=RuntimeEventOperation.RUNTIME_STOPPED,
+            outcome=RuntimeEventOutcome.SUCCEEDED,
+            summary="runtime stopped",
+        )
 
     async def safe_stop(
         self,
@@ -144,7 +226,7 @@ class RuntimeManager:
         """Best-effort stop active motors once, preserving a triggering fault."""
         self._require_state(RuntimeManagerOperation.SAFE_STOP, RuntimeManagerState.RUNNING)
         self._emit(
-            operation="safe_stop",
+            operation=RuntimeEventOperation.SAFE_STOP,
             outcome=RuntimeEventOutcome.REQUESTED,
             summary="safe-stop requested",
         )
@@ -157,7 +239,7 @@ class RuntimeManager:
                     continue
                 self._emit_resource(
                     resource,
-                    operation="safe_stop",
+                    operation=RuntimeEventOperation.SAFE_STOP,
                     outcome=RuntimeEventOutcome.ATTEMPTED,
                     summary="motor safe-stop attempted",
                 )
@@ -171,13 +253,13 @@ class RuntimeManager:
                     outcomes.append(SafeStopOutcome(identity, False, error))
                     self._emit_resource(
                         resource,
-                        operation="health_degradation",
+                        operation=RuntimeEventOperation.HEALTH_DEGRADATION,
                         outcome=RuntimeEventOutcome.FAILED,
                         summary="resource health degraded after safe-stop failure",
                     )
                     self._emit_resource(
                         resource,
-                        operation="safe_stop",
+                        operation=RuntimeEventOperation.SAFE_STOP,
                         outcome=RuntimeEventOutcome.FAILED,
                         summary="motor safe-stop failed",
                     )
@@ -185,7 +267,7 @@ class RuntimeManager:
                     outcomes.append(SafeStopOutcome(identity, True))
                     self._emit_resource(
                         resource,
-                        operation="safe_stop",
+                        operation=RuntimeEventOperation.SAFE_STOP,
                         outcome=RuntimeEventOutcome.SUCCEEDED,
                         summary="motor safe-stop succeeded",
                     )
@@ -193,7 +275,7 @@ class RuntimeManager:
 
         report = self._safe_stop_report
         self._emit(
-            operation="safe_stop_cleanup",
+            operation=RuntimeEventOperation.SAFE_STOP_CLEANUP,
             outcome=RuntimeEventOutcome.COMPLETED,
             summary="safe-stop cleanup completed",
         )
@@ -209,19 +291,49 @@ class RuntimeManager:
         self,
         started: list[ResourceIdentity],
     ) -> tuple[RollbackFailure, ...]:
+        self._emit(
+            operation=RuntimeEventOperation.STARTUP_ROLLBACK,
+            outcome=RuntimeEventOutcome.ATTEMPTED,
+            summary="startup rollback attempted",
+        )
         failures: list[RollbackFailure] = []
         for identity in reversed(started):
+            resource = self._resources[identity]
+            self._emit_resource(
+                resource,
+                operation=RuntimeEventOperation.RESOURCE_SHUTDOWN,
+                outcome=RuntimeEventOutcome.ATTEMPTED,
+                summary="resource shutdown attempted during startup rollback",
+            )
             try:
-                await self._resources[identity].shutdown()
+                await resource.shutdown()
             except Exception as error:
                 failures.append(RollbackFailure(identity, error))
+                self._emit_resource(
+                    resource,
+                    operation=RuntimeEventOperation.RESOURCE_SHUTDOWN,
+                    outcome=RuntimeEventOutcome.FAILED,
+                    summary="resource shutdown failed during startup rollback",
+                )
+            else:
+                self._emit_resource(
+                    resource,
+                    operation=RuntimeEventOperation.RESOURCE_SHUTDOWN,
+                    outcome=RuntimeEventOutcome.SUCCEEDED,
+                    summary="resource shutdown succeeded during startup rollback",
+                )
+        self._emit(
+            operation=RuntimeEventOperation.STARTUP_ROLLBACK,
+            outcome=RuntimeEventOutcome.COMPLETED,
+            summary="startup rollback completed",
+        )
         return tuple(failures)
 
     def _emit_resource(
         self,
         resource: Resource,
         *,
-        operation: str,
+        operation: RuntimeEventOperation,
         outcome: RuntimeEventOutcome,
         summary: str,
     ) -> None:
@@ -237,7 +349,7 @@ class RuntimeManager:
     def _emit(
         self,
         *,
-        operation: str,
+        operation: RuntimeEventOperation,
         outcome: RuntimeEventOutcome,
         summary: str,
         identity: ResourceIdentity | None = None,

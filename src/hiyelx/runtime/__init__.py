@@ -22,10 +22,16 @@ from hiyelx.runtime.errors import (
 from hiyelx.runtime.events import (
     LocalEventRecorder,
     RuntimeEvent,
+    RuntimeEventOperation,
     RuntimeEventOutcome,
     RuntimeEventSink,
 )
 from hiyelx.runtime.manager import RuntimeManager
+from hiyelx.runtime.operations import (
+    RuntimeOperations,
+    RuntimeOperationsSnapshot,
+    RuntimeResourceSnapshot,
+)
 from hiyelx.runtime.state import RuntimeManagerOperation, RuntimeManagerState
 
 __all__ = [
@@ -40,6 +46,9 @@ __all__ = [
     "RuntimeManagerError",
     "RuntimeManagerOperation",
     "RuntimeManagerState",
+    "RuntimeOperations",
+    "RuntimeOperationsSnapshot",
+    "RuntimeResourceSnapshot",
     "RuntimeShutdownError",
     "RuntimeSafeStopError",
     "RuntimeStartupError",
@@ -50,6 +59,7 @@ __all__ = [
     "SafeStopReport",
     "LocalEventRecorder",
     "RuntimeEvent",
+    "RuntimeEventOperation",
     "RuntimeEventOutcome",
     "RuntimeEventSink",
     "UnknownOwnedResourceError",

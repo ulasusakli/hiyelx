@@ -4,7 +4,7 @@ HIYELX is a hardware-independent robotics software platform for building, runnin
 
 ## Current stage
 
-**PRE-SEED — Hardware-Connected Developer Alpha, software track**
+**PRE-SEED — Runtime Operations Alpha, RTO-1**
 
 The bounded [`v0.1.0` Software Developer Preview](https://github.com/ulasusakli/hiyelx/releases/tag/v0.1.0)
 was published as a GitHub pre-release from commit
@@ -112,13 +112,28 @@ limitations are recorded in the
 [`Module/Driver SDK external dry-run evidence`](docs/evidence/2026-10-12-module-driver-sdk-external-dry-run.md).
 
 HCA-SDK-5 closes only the bounded external usability gate for the local-wheel
-alpha workflow. HCA-HW-0 is now the active software-side hardware-readiness
-task. Its strict, device-free preflight and fake-verifiable cleanup harness are
-documented in
+alpha workflow. HCA-HW-0 software readiness was completed at
+`535c14cfc9ec1cc819bb86d4ddf31a9d7fe82569`. Its strict, device-free preflight
+and fake-verifiable cleanup harness are documented in
 [`Hardware acceptance readiness`](docs/hardware/hardware-acceptance-readiness.md).
 XL430 physical acceptance, real reference-driver physical acceptance, and
-Physical Hardware Proof remain pending; Runtime Operations Alpha remains after
-the hardware-readiness boundary.
+Physical Hardware Proof remain pending in parallel and require separate
+evidence.
+
+## Runtime Operations Alpha
+
+RTO-1 is the active capability. It provides immutable deterministic snapshots
+of one local Runtime Manager, ordered resource lifecycle and health state,
+startup ownership, and structured instance-local events. The smallest local
+operations façade delegates only explicit start, safe-stop, and shutdown. See
+the [`Runtime Operations Alpha RTO-1`](docs/architecture/runtime-operations-alpha.md)
+contract and its fake-only verification coverage.
+
+Next are RTO-2 Local Runtime Start/Stop CLI, RTO-3 Local Events and Run History,
+and Simulation/Preview Alpha. Physical evidence does not block Runtime
+Operations, Simulation/Preview, Studio, Blocks, Code, Assisted Setup, Trigger,
+Job, Camera/Vision, Motion, or Autonomy development. Any physical validation
+claim still requires separate reviewed physical evidence.
 
 ## Pre-seed scope
 

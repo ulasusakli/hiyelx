@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass
-from enum import Enum
+from enum import Enum, StrEnum
 from typing import Protocol
 
 from hiyelx.resources import HealthStatus, LifecycleState, ResourceIdentity
@@ -20,12 +19,28 @@ class RuntimeEventOutcome(Enum):
     COMPLETED = "completed"
 
 
+class RuntimeEventOperation(StrEnum):
+    """Stable operation names emitted by the local runtime."""
+
+    RUNTIME_START = "runtime_start"
+    RESOURCE_START = "resource_start"
+    STARTUP_ROLLBACK = "startup_rollback"
+    RUNTIME_RUNNING = "runtime_running"
+    RUNTIME_SHUTDOWN = "runtime_shutdown"
+    RESOURCE_SHUTDOWN = "resource_shutdown"
+    RUNTIME_STOPPED = "runtime_stopped"
+    RUNTIME_FAILED = "runtime_failed"
+    SAFE_STOP = "safe_stop"
+    HEALTH_DEGRADATION = "health_degradation"
+    SAFE_STOP_CLEANUP = "safe_stop_cleanup"
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeEvent:
     """One immutable, sanitized runtime event with deterministic ordering."""
 
     sequence: int
-    operation: str
+    operation: RuntimeEventOperation
     outcome: RuntimeEventOutcome
     summary: str
     identity: ResourceIdentity | None = None
@@ -50,6 +65,13 @@ class LocalEventRecorder:
         self._events.append(event)
 
     @property
-    def events(self) -> Sequence[RuntimeEvent]:
+    def events(self) -> tuple[RuntimeEvent, ...]:
         """Return an immutable ordered snapshot."""
         return tuple(self._events)
+
+    @property
+    def high_water_mark(self) -> int | None:
+        """Return the latest retained sequence, or ``None`` when empty."""
+        if not self._events:
+            return None
+        return self._events[-1].sequence

@@ -15,6 +15,7 @@ from hiyelx.resources import (
 )
 from hiyelx.runtime import (
     LocalEventRecorder,
+    RuntimeEventOperation,
     RuntimeEventOutcome,
     RuntimeManager,
     RuntimeSafeStopError,
@@ -170,18 +171,39 @@ async def test_events_are_deterministic_immutable_sanitized_and_instance_local()
     events = first_recorder.events
     assert tuple(event.sequence for event in events) == tuple(range(len(events)))
     assert tuple((event.operation, event.outcome) for event in events) == (
-        ("safe_stop", RuntimeEventOutcome.REQUESTED),
-        ("safe_stop", RuntimeEventOutcome.ATTEMPTED),
-        ("health_degradation", RuntimeEventOutcome.FAILED),
-        ("safe_stop", RuntimeEventOutcome.FAILED),
-        ("safe_stop", RuntimeEventOutcome.ATTEMPTED),
-        ("safe_stop", RuntimeEventOutcome.SUCCEEDED),
-        ("safe_stop_cleanup", RuntimeEventOutcome.COMPLETED),
+        (RuntimeEventOperation.RUNTIME_START, RuntimeEventOutcome.REQUESTED),
+        (RuntimeEventOperation.RESOURCE_START, RuntimeEventOutcome.ATTEMPTED),
+        (RuntimeEventOperation.RESOURCE_START, RuntimeEventOutcome.SUCCEEDED),
+        (RuntimeEventOperation.RESOURCE_START, RuntimeEventOutcome.ATTEMPTED),
+        (RuntimeEventOperation.RESOURCE_START, RuntimeEventOutcome.SUCCEEDED),
+        (RuntimeEventOperation.RESOURCE_START, RuntimeEventOutcome.ATTEMPTED),
+        (RuntimeEventOperation.RESOURCE_START, RuntimeEventOutcome.SUCCEEDED),
+        (RuntimeEventOperation.RUNTIME_RUNNING, RuntimeEventOutcome.SUCCEEDED),
+        (RuntimeEventOperation.SAFE_STOP, RuntimeEventOutcome.REQUESTED),
+        (RuntimeEventOperation.SAFE_STOP, RuntimeEventOutcome.ATTEMPTED),
+        (RuntimeEventOperation.HEALTH_DEGRADATION, RuntimeEventOutcome.FAILED),
+        (RuntimeEventOperation.SAFE_STOP, RuntimeEventOutcome.FAILED),
+        (RuntimeEventOperation.SAFE_STOP, RuntimeEventOutcome.ATTEMPTED),
+        (RuntimeEventOperation.SAFE_STOP, RuntimeEventOutcome.SUCCEEDED),
+        (RuntimeEventOperation.SAFE_STOP_CLEANUP, RuntimeEventOutcome.COMPLETED),
     )
     assert all("/dev/private" not in event.summary for event in events)
     assert all("top-secret" not in event.summary for event in events)
-    assert second_recorder.events == ()
-    assert events[2].health_status is HealthStatus.UNHEALTHY
+    assert tuple(event.operation for event in second_recorder.events) == (
+        RuntimeEventOperation.RUNTIME_START,
+        RuntimeEventOperation.RESOURCE_START,
+        RuntimeEventOperation.RESOURCE_START,
+        RuntimeEventOperation.RESOURCE_START,
+        RuntimeEventOperation.RESOURCE_START,
+        RuntimeEventOperation.RESOURCE_START,
+        RuntimeEventOperation.RESOURCE_START,
+        RuntimeEventOperation.RUNTIME_RUNNING,
+    )
+    assert all(
+        event.operation is not RuntimeEventOperation.SAFE_STOP
+        for event in second_recorder.events
+    )
+    assert events[10].health_status is HealthStatus.UNHEALTHY
 
     with pytest.raises(FrozenInstanceError):
         events[0].summary = "changed"  # type: ignore[misc]
