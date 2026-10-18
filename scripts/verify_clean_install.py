@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import os
+import select
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -22,6 +24,24 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_TRANSCRIPT = REPOSITORY_ROOT / "examples/expected/sim-motor.txt"
 DEMO_CONFIG = REPOSITORY_ROOT / "examples/configs/sim-motor.yaml"
 EXPECTED_LICENSE_EXPRESSION = "Apache-2.0"
+RUNTIME_SESSION = "clean-install"
+EXPECTED_RUNTIME_READY = (
+    b"session=clean-install",
+    b"runtime=running",
+    b"control=ready",
+)
+EXPECTED_RUNTIME_STATUS = (
+    b"session=clean-install\n"
+    b"manager-state=running\n"
+    b"resource-count=1\n"
+    b"resource=sim_motor lifecycle=running health=healthy health-summary=none\n"
+    b"successful-start-order=sim_motor\n"
+    b"active-resource-order=sim_motor\n"
+    b"event-high-water-mark=3\n"
+    b"latest-event=runtime running\n"
+)
+EXPECTED_RUNTIME_STOP = b"session=clean-install\nruntime=stopped\n"
+_READINESS_TIMEOUT_SECONDS = 15.0
 EXPECTED_SCAFFOLD_FILES = (
     Path("README.md"),
     Path("acme_motor_driver/__init__.py"),
@@ -216,7 +236,168 @@ def run_clean_install_verification(
             environment_sensitive=True,
         )
         assert_transcript_equal(expected, demonstrated.stdout)
+        if runner is None:
+            verify_installed_runtime_workflow(
+                executable,
+                copied_config,
+                workspace=workspace,
+                environment=environment,
+            )
+        else:
+            _verify_runtime_runner_contract(
+                command_runner,
+                executable,
+                copied_config,
+                workspace=workspace,
+                environment=environment,
+            )
         return wheel.name
+
+
+def verify_installed_runtime_workflow(
+    executable: Path,
+    config_path: Path,
+    *,
+    workspace: Path,
+    environment: Mapping[str, str],
+) -> None:
+    """Prove cross-process control through the installed wheel executable."""
+    if sys.platform not in {"darwin", "linux"}:
+        raise VerificationEnvironmentBlocked
+    state_parent = Path("/private/tmp" if sys.platform == "darwin" else "/tmp")
+    with tempfile.TemporaryDirectory(
+        prefix="hiyelx-wheel-runtime-",
+        dir=state_parent,
+    ) as state_name:
+        runtime_environment = dict(environment)
+        runtime_environment["HIYELX_RUNTIME_STATE_DIR"] = state_name
+        owner: subprocess.Popen[bytes] | None = None
+        try:
+            owner = subprocess.Popen(
+                (
+                    str(executable),
+                    "runtime",
+                    "start",
+                    str(config_path),
+                    "--session",
+                    RUNTIME_SESSION,
+                ),
+                cwd=workspace,
+                env=runtime_environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            if _read_owner_lines(owner, len(EXPECTED_RUNTIME_READY)) != (
+                EXPECTED_RUNTIME_READY
+            ):
+                raise VerificationFailure
+
+            status = _require_success(
+                _run_command(
+                    (
+                        str(executable),
+                        "runtime",
+                        "status",
+                        "--session",
+                        RUNTIME_SESSION,
+                    ),
+                    workspace,
+                    runtime_environment,
+                ),
+                environment_sensitive=True,
+            )
+            if status.stdout != EXPECTED_RUNTIME_STATUS or status.stderr:
+                raise VerificationFailure
+
+            stopped = _require_success(
+                _run_command(
+                    (
+                        str(executable),
+                        "runtime",
+                        "stop",
+                        "--session",
+                        RUNTIME_SESSION,
+                    ),
+                    workspace,
+                    runtime_environment,
+                ),
+                environment_sensitive=True,
+            )
+            if stopped.stdout != EXPECTED_RUNTIME_STOP or stopped.stderr:
+                raise VerificationFailure
+
+            remaining_stdout, remaining_stderr = owner.communicate(timeout=15)
+            if (
+                owner.returncode != SUCCESS
+                or remaining_stdout != b"runtime=stopped\n"
+                or remaining_stderr
+                or (Path(state_name) / RUNTIME_SESSION).exists()
+            ):
+                raise VerificationFailure
+        except subprocess.TimeoutExpired as error:
+            raise VerificationEnvironmentBlocked from error
+        except OSError as error:
+            raise VerificationEnvironmentBlocked from error
+        finally:
+            if owner is not None and owner.poll() is None:
+                owner.terminate()
+                try:
+                    owner.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    owner.kill()
+                    owner.wait(timeout=10)
+
+
+def _verify_runtime_runner_contract(
+    runner: CommandRunner,
+    executable: Path,
+    config_path: Path,
+    *,
+    workspace: Path,
+    environment: Mapping[str, str],
+) -> None:
+    """Exercise deterministic verifier orchestration for injected unit runners."""
+    state = workspace / "runtime-state"
+    runtime_environment = dict(environment)
+    runtime_environment["HIYELX_RUNTIME_STATE_DIR"] = str(state)
+    started = _require_success(
+        runner(
+            (
+                str(executable),
+                "runtime",
+                "start",
+                str(config_path),
+                "--session",
+                RUNTIME_SESSION,
+            ),
+            workspace,
+            runtime_environment,
+        ),
+        environment_sensitive=True,
+    )
+    expected_owner = b"\n".join(EXPECTED_RUNTIME_READY) + b"\nruntime=stopped\n"
+    if started.stdout != expected_owner or started.stderr:
+        raise VerificationFailure
+    status = _require_success(
+        runner(
+            (str(executable), "runtime", "status", "--session", RUNTIME_SESSION),
+            workspace,
+            runtime_environment,
+        ),
+        environment_sensitive=True,
+    )
+    if status.stdout != EXPECTED_RUNTIME_STATUS or status.stderr:
+        raise VerificationFailure
+    stopped = _require_success(
+        runner(
+            (str(executable), "runtime", "stop", "--session", RUNTIME_SESSION),
+            workspace,
+            runtime_environment,
+        ),
+        environment_sensitive=True,
+    )
+    if stopped.stdout != EXPECTED_RUNTIME_STOP or stopped.stderr:
+        raise VerificationFailure
 
 
 def load_expected_transcript(path: Path = EXPECTED_TRANSCRIPT) -> tuple[str, ...]:
@@ -305,6 +486,41 @@ def _run_command(
     except subprocess.TimeoutExpired as error:
         raise VerificationEnvironmentBlocked from error
     return CommandResult(completed.returncode, completed.stdout, completed.stderr)
+
+
+def _read_owner_lines(
+    owner: subprocess.Popen[bytes],
+    count: int,
+) -> tuple[bytes, ...]:
+    if owner.stdout is None or owner.stderr is None:
+        raise VerificationFailure
+    deadline = time.monotonic() + _READINESS_TIMEOUT_SECONDS
+    pending = bytearray()
+    lines: list[bytes] = []
+    while len(lines) < count:
+        while b"\n" in pending and len(lines) < count:
+            line, _, remainder = pending.partition(b"\n")
+            pending = bytearray(remainder)
+            lines.append(bytes(line))
+        if len(lines) == count:
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise VerificationFailure
+        readable, _, _ = select.select([owner.stdout], [], [], remaining)
+        if not readable:
+            raise VerificationFailure
+        try:
+            chunk = os.read(owner.stdout.fileno(), 4096)
+        except OSError as error:
+            raise VerificationFailure from error
+        if not chunk:
+            stderr = owner.stderr.read() if owner.poll() is not None else b""
+            if _looks_environment_blocked(stderr):
+                raise VerificationEnvironmentBlocked
+            raise VerificationFailure
+        pending.extend(chunk)
+    return tuple(lines)
 
 
 def _require_success(

@@ -24,6 +24,24 @@ from hiyelx.resources import ResourceIdentity
 from hiyelx.rpc import MotorGrpcServer, RpcTransportState
 from hiyelx.rpc.generated import motor_pb2, motor_pb2_grpc
 from hiyelx.runtime import RuntimeManager, RuntimeManagerState
+from hiyelx.runtime.control import (
+    ControlProtocolError,
+    InvalidRuntimeControlConfigurationError,
+    InvalidSessionIdError,
+    RuntimeCliExitCode,
+    RuntimeOwnerCleanupError,
+    RuntimeOwnerStartupError,
+    SessionAlreadyRunningError,
+    SessionNotRunningError,
+    UnsafeSessionPathError,
+    UnsupportedPlatformError,
+    render_status,
+    request_status,
+    request_stop,
+    run_local_runtime,
+    validate_session_id,
+    validate_simulation_config,
+)
 from hiyelx.sdk import MotorDriverScaffoldError, create_motor_driver_scaffold
 from hiyelx.simulation import SimulatedMotor, register_simulated_motor
 
@@ -63,6 +81,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             arguments.path,
             physical_operation_consent=arguments.physical_consent,
         )
+    if arguments.command == "runtime":
+        if arguments.runtime == "start":
+            return _runtime_start(arguments.path, session=arguments.session)
+        if arguments.runtime == "status":
+            return _runtime_status(session=arguments.session)
+        if arguments.runtime == "stop":
+            return _runtime_stop(session=arguments.session)
 
     parser.error("a command is required")
 
@@ -108,7 +133,149 @@ def _parser() -> argparse.ArgumentParser:
     )
     preflight.add_argument("path", type=Path)
     preflight.add_argument("--physical-consent")
+
+    runtime = commands.add_parser(
+        "runtime",
+        help="control one foreground local simulation runtime",
+    )
+    runtime_commands = runtime.add_subparsers(dest="runtime")
+    runtime_start = runtime_commands.add_parser(
+        "start",
+        help="start and own a local runtime in the foreground",
+    )
+    runtime_start.add_argument("path", type=Path)
+    runtime_start.add_argument("--session", required=True)
+    runtime_status = runtime_commands.add_parser(
+        "status",
+        help="print a sanitized local runtime snapshot",
+    )
+    runtime_status.add_argument("--session", required=True)
+    runtime_stop = runtime_commands.add_parser(
+        "stop",
+        help="request ordered safe-stop and shutdown",
+    )
+    runtime_stop.add_argument("--session", required=True)
     return parser
+
+
+def _runtime_start(path: Path, *, session: str) -> int:
+    try:
+        validate_session_id(session)
+        config = load_config(path)
+        validate_simulation_config(config)
+        asyncio.run(run_local_runtime(config, session, ready=_print_runtime_ready))
+    except InvalidSessionIdError:
+        return _runtime_failure(
+            RuntimeCliExitCode.INVALID_SESSION_ID,
+            "runtime session ID is invalid",
+        )
+    except (ConfigurationError, InvalidRuntimeControlConfigurationError):
+        return _runtime_failure(
+            RuntimeCliExitCode.INVALID_CONFIGURATION,
+            "runtime configuration is invalid",
+        )
+    except SessionAlreadyRunningError:
+        return _runtime_failure(
+            RuntimeCliExitCode.SESSION_ALREADY_RUNNING,
+            "runtime session is already running",
+        )
+    except UnsupportedPlatformError:
+        return _runtime_failure(
+            RuntimeCliExitCode.UNSUPPORTED_PLATFORM,
+            "runtime control is unsupported on this platform",
+        )
+    except RuntimeOwnerStartupError:
+        return _runtime_failure(
+            RuntimeCliExitCode.RUNTIME_STARTUP_FAILURE,
+            "runtime startup failed",
+        )
+    except RuntimeOwnerCleanupError:
+        return _runtime_failure(
+            RuntimeCliExitCode.RUNTIME_CLEANUP_FAILURE,
+            "runtime cleanup failed",
+        )
+    except (ControlProtocolError, UnsafeSessionPathError, OSError):
+        return _runtime_failure(
+            RuntimeCliExitCode.CONTROL_PROTOCOL_FAILURE,
+            "runtime control failed",
+        )
+    except KeyboardInterrupt:
+        print("runtime=stopped")
+        return RuntimeCliExitCode.SUCCESS
+    print("runtime=stopped")
+    return RuntimeCliExitCode.SUCCESS
+
+
+def _runtime_status(*, session: str) -> int:
+    try:
+        reply = asyncio.run(request_status(session))
+    except InvalidSessionIdError:
+        return _runtime_failure(
+            RuntimeCliExitCode.INVALID_SESSION_ID,
+            "runtime session ID is invalid",
+        )
+    except SessionNotRunningError:
+        return _runtime_failure(
+            RuntimeCliExitCode.SESSION_NOT_RUNNING,
+            "runtime session is not running",
+        )
+    except UnsupportedPlatformError:
+        return _runtime_failure(
+            RuntimeCliExitCode.UNSUPPORTED_PLATFORM,
+            "runtime control is unsupported on this platform",
+        )
+    except (ControlProtocolError, UnsafeSessionPathError, OSError):
+        return _runtime_failure(
+            RuntimeCliExitCode.CONTROL_PROTOCOL_FAILURE,
+            "runtime control failed",
+        )
+    for line in render_status(reply):
+        print(line)
+    return RuntimeCliExitCode.SUCCESS
+
+
+def _runtime_stop(*, session: str) -> int:
+    try:
+        reply = asyncio.run(request_stop(session))
+    except InvalidSessionIdError:
+        return _runtime_failure(
+            RuntimeCliExitCode.INVALID_SESSION_ID,
+            "runtime session ID is invalid",
+        )
+    except SessionNotRunningError:
+        return _runtime_failure(
+            RuntimeCliExitCode.SESSION_NOT_RUNNING,
+            "runtime session is not running",
+        )
+    except UnsupportedPlatformError:
+        return _runtime_failure(
+            RuntimeCliExitCode.UNSUPPORTED_PLATFORM,
+            "runtime control is unsupported on this platform",
+        )
+    except RuntimeOwnerCleanupError:
+        return _runtime_failure(
+            RuntimeCliExitCode.RUNTIME_CLEANUP_FAILURE,
+            "runtime cleanup failed",
+        )
+    except (ControlProtocolError, UnsafeSessionPathError, OSError):
+        return _runtime_failure(
+            RuntimeCliExitCode.CONTROL_PROTOCOL_FAILURE,
+            "runtime control failed",
+        )
+    print(f"session={reply.session}")
+    print("runtime=stopped")
+    return RuntimeCliExitCode.SUCCESS
+
+
+def _print_runtime_ready(session: str) -> None:
+    print(f"session={session}", flush=True)
+    print("runtime=running", flush=True)
+    print("control=ready", flush=True)
+
+
+def _runtime_failure(code: RuntimeCliExitCode, message: str) -> int:
+    print(f"error: {message}", file=sys.stderr)
+    return code
 
 
 def _validate_config(path: Path) -> int:

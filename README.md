@@ -4,7 +4,7 @@ HIYELX is a hardware-independent robotics software platform for building, runnin
 
 ## Current stage
 
-**PRE-SEED — Runtime Operations Alpha, RTO-1**
+**PRE-SEED — Runtime Operations Alpha, RTO-2**
 
 The bounded [`v0.1.0` Software Developer Preview](https://github.com/ulasusakli/hiyelx/releases/tag/v0.1.0)
 was published as a GitHub pre-release from commit
@@ -122,15 +122,35 @@ evidence.
 
 ## Runtime Operations Alpha
 
-RTO-1 is the active capability. It provides immutable deterministic snapshots
-of one local Runtime Manager, ordered resource lifecycle and health state,
-startup ownership, and structured instance-local events. The smallest local
-operations façade delegates only explicit start, safe-stop, and shutdown. See
-the [`Runtime Operations Alpha RTO-1`](docs/architecture/runtime-operations-alpha.md)
-contract and its fake-only verification coverage.
+RTO-1 was completed at `bee98b6c48725db2e9311b30fcf8f00126f6061e`.
+It provides immutable deterministic snapshots of one local Runtime Manager,
+ordered resource lifecycle and health state, startup ownership, and structured
+instance-local events.
 
-Next are RTO-2 Local Runtime Start/Stop CLI, RTO-3 Local Events and Run History,
-and Simulation/Preview Alpha. Physical evidence does not block Runtime
+RTO-2 Local Runtime Process and Start/Stop CLI is active. Start the canonical
+simulation runtime in one terminal:
+
+```bash
+hiyelx runtime start examples/configs/sim-motor.yaml --session local-sim
+```
+
+Then inspect and stop it from another terminal:
+
+```bash
+hiyelx runtime status --session local-sim
+hiyelx runtime stop --session local-sim
+```
+
+The foreground owner uses a private current-user Unix socket and a strict
+versioned local protocol. It accepts built-in simulation models only; it does
+not bind TCP, discover hardware, load arbitrary modules, or use a cloud
+service. See the
+[`Runtime Operations Alpha`](docs/architecture/runtime-operations-alpha.md)
+contract for canonical status output, state-directory ownership, cleanup, and
+exit codes.
+
+Next are RTO-3 Local Events and Run History, RTO-4 Runtime Operations Alpha
+Acceptance, and Simulation/Preview Alpha. Physical evidence does not block Runtime
 Operations, Simulation/Preview, Studio, Blocks, Code, Assisted Setup, Trigger,
 Job, Camera/Vision, Motion, or Autonomy development. Any physical validation
 claim still requires separate reviewed physical evidence.

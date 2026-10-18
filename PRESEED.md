@@ -23,7 +23,7 @@ DEFERRED without treating it as complete:
 
 ### NOW
 
-**Runtime Operations Alpha — RTO-1**
+**Runtime Operations Alpha — RTO-2 Local Runtime Process and Start/Stop CLI**
 
 The published `v0.1.0` Software Developer Preview remains the bounded release
 snapshot at commit `e3801ed43ec4b173dae765ac583055314defce50`. Current `main`
@@ -32,15 +32,17 @@ contains later Module/Driver SDK Alpha software evidence under package identity
 published to a package registry. A possible future `v0.2.0a1` tag and release
 require separate authorization; stable `0.2.0` remains reserved.
 
-RTO-1 establishes immutable deterministic local runtime snapshots, ordered
-resource lifecycle and health state, startup ownership, and sanitized
-instance-local lifecycle events. It adds only an explicit local façade for
-start, safe-stop, shutdown, and read-only observation.
+RTO-2 establishes the first usable cross-process Runtime Operations workflow:
+one foreground process owns a simulation-backed runtime while separate CLI
+invocations inspect its sanitized snapshot and request ordered safe-stop and
+shutdown over a private Unix-domain socket. The bounded session protocol is
+local, versioned, deterministic, and current-user-only. It adds no daemon,
+TCP listener, cloud dependency, persistence, retry loop, or hardware access.
 
 ### NEXT
 
-1. RTO-2 Local Runtime Start/Stop CLI.
-2. RTO-3 Local Events and Run History.
+1. RTO-3 Local Events and Run History.
+2. RTO-4 Runtime Operations Alpha Acceptance.
 3. Simulation/Preview Alpha.
 
 ### DONE
@@ -125,6 +127,10 @@ start, safe-stop, shutdown, and read-only observation.
   `535c14cfc9ec1cc819bb86d4ddf31a9d7fe82569`, establishing the typed,
   explicit-opt-in, device-free preflight and fake-verifiable acceptance
   sequence. This is software readiness only and is not physical acceptance.
+- RTO-1 Runtime Operations State Model integrated at
+  `bee98b6c48725db2e9311b30fcf8f00126f6061e`, establishing immutable,
+  deterministic, sanitized local runtime snapshots, structured lifecycle
+  events, and the instance-local `RuntimeOperations` façade.
 
 ### PARALLEL / DEFERRED
 

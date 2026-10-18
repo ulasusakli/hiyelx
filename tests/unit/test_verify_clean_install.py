@@ -1,3 +1,7 @@
+import os
+import subprocess
+import sys
+import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from zipfile import ZipFile
@@ -65,6 +69,23 @@ class FakeRunner:
             if self.fail_demo:
                 return verify.CommandResult(1, b"", b"secret backend failure")
             return verify.CommandResult(0, self.expected, b"")
+        elif "runtime" in command:
+            assert environment["HIYELX_RUNTIME_STATE_DIR"] == str(
+                cwd / "runtime-state"
+            )
+            runtime_index = command.index("runtime")
+            runtime_command = command[runtime_index + 1]
+            if runtime_command == "start":
+                return verify.CommandResult(
+                    0,
+                    b"\n".join(verify.EXPECTED_RUNTIME_READY)
+                    + b"\nruntime=stopped\n",
+                    b"",
+                )
+            if runtime_command == "status":
+                return verify.CommandResult(0, verify.EXPECTED_RUNTIME_STATUS, b"")
+            if runtime_command == "stop":
+                return verify.CommandResult(0, verify.EXPECTED_RUNTIME_STOP, b"")
         return verify.CommandResult(0, b"", b"")
 
 
@@ -196,3 +217,106 @@ def test_temporary_workspace_is_removed_after_failure(tmp_path: Path) -> None:
         )
 
     assert tuple(tmp_path.iterdir()) == ()
+
+
+@pytest.mark.parametrize("line_count", (1, 2))
+def test_readiness_protocol_uses_one_total_deadline(
+    line_count: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(verify, "_READINESS_TIMEOUT_SECONDS", 0.2)
+    payload = repr(b"\n".join(verify.EXPECTED_RUNTIME_READY[:line_count]) + b"\n")
+    owner = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            f"import sys,time; sys.stdout.buffer.write({payload}); "
+            "sys.stdout.buffer.flush(); time.sleep(30)",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    started = time.monotonic()
+    try:
+        with pytest.raises(verify.VerificationFailure):
+            verify._read_owner_lines(  # pyright: ignore[reportPrivateUsage]
+                owner, len(verify.EXPECTED_RUNTIME_READY)
+            )
+        assert time.monotonic() - started < 2.0
+    finally:
+        owner.terminate()
+        owner.wait(timeout=5)
+    assert owner.poll() is not None
+
+
+def test_readiness_protocol_accepts_normal_three_line_sequence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(verify, "_READINESS_TIMEOUT_SECONDS", 1.0)
+    payload = repr(b"\n".join(verify.EXPECTED_RUNTIME_READY) + b"\n")
+    owner = subprocess.Popen(
+        [sys.executable, "-c", f"import sys; sys.stdout.buffer.write({payload})"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        assert (
+            verify._read_owner_lines(  # pyright: ignore[reportPrivateUsage]
+                owner, 3
+            )
+            == verify.EXPECTED_RUNTIME_READY
+        )
+    finally:
+        owner.wait(timeout=5)
+    assert owner.poll() is not None
+
+
+def test_readiness_timeout_terminates_owner_and_removes_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(verify, "_READINESS_TIMEOUT_SECONDS", 0.2)
+    executable = tmp_path / "partial-owner"
+    executable.write_text(
+        """#!/usr/bin/env python3
+import os
+import shutil
+import signal
+import time
+from pathlib import Path
+
+state = Path(os.environ["HIYELX_RUNTIME_STATE_DIR"]) / "clean-install"
+marker = Path(os.environ["HIYELX_TEST_OWNER_MARKER"])
+state.mkdir(parents=True)
+marker.write_text(str(os.getpid()), encoding="utf-8")
+
+def cleanup(_signum, _frame):
+    shutil.rmtree(state, ignore_errors=True)
+    marker.unlink(missing_ok=True)
+    raise SystemExit(0)
+
+signal.signal(signal.SIGTERM, cleanup)
+print("session=clean-install", flush=True)
+while True:
+    time.sleep(1)
+""",
+        encoding="utf-8",
+    )
+    executable.chmod(0o700)
+    config = tmp_path / "sim-motor.yaml"
+    config.write_text('schema_version: "1"\nresources: []\n', encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    marker = tmp_path / "owner.pid"
+    environment = dict(os.environ)
+    environment["HIYELX_TEST_OWNER_MARKER"] = str(marker)
+
+    with pytest.raises(verify.VerificationFailure):
+        verify.verify_installed_runtime_workflow(
+            executable,
+            config,
+            workspace=workspace,
+            environment=environment,
+        )
+
+    assert not marker.exists()

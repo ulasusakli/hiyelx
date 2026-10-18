@@ -4,8 +4,16 @@ from pathlib import Path
 import pytest
 
 from hiyelx import cli
+from hiyelx.resources import HealthStatus, LifecycleState, ResourceIdentity
 from hiyelx.rpc import MotorGrpcServer, RpcTransportState
 from hiyelx.runtime import RuntimeManager, RuntimeManagerState
+from hiyelx.runtime.control import (
+    ResourceStatus,
+    RuntimeCliExitCode,
+    SessionNotRunningError,
+    StatusReply,
+    StopReply,
+)
 from hiyelx.simulation import SimulatedMotor
 
 EXPECTED_TRANSCRIPT = tuple(
@@ -27,6 +35,7 @@ def test_cli_help_and_demo_dispatch(
     assert "demo" in help_output
     assert "scaffold" in help_output
     assert "hardware" in help_output
+    assert "runtime" in help_output
 
     async def fake_demo() -> tuple[str, ...]:
         return ("demo=dispatched",)
@@ -62,6 +71,96 @@ def test_validate_config_failure_is_sanitized(
     assert captured.err == "error: configuration is invalid\n"
     assert "top-secret" not in captured.err
     assert str(config_path) not in captured.err
+
+
+def test_runtime_status_and_stop_dispatch_with_canonical_output(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = ResourceIdentity("sim_motor")
+
+    async def fake_status(session: str) -> StatusReply:
+        assert session == "alpha"
+        return StatusReply(
+            session="alpha",
+            manager_state=RuntimeManagerState.RUNNING,
+            resources=(
+                ResourceStatus(
+                    identity,
+                    LifecycleState.RUNNING,
+                    HealthStatus.HEALTHY,
+                    None,
+                ),
+            ),
+            successful_start_order=(identity,),
+            active_resource_order=(identity,),
+            event_high_water_mark=3,
+            latest_event_summary="runtime running",
+        )
+
+    async def fake_stop(session: str) -> StopReply:
+        assert session == "alpha"
+        return StopReply("alpha")
+
+    monkeypatch.setattr(cli, "request_status", fake_status)
+    monkeypatch.setattr(cli, "request_stop", fake_stop)
+
+    assert cli.main(["runtime", "status", "--session", "alpha"]) == 0
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out == (
+        "session=alpha\n"
+        "manager-state=running\n"
+        "resource-count=1\n"
+        "resource=sim_motor lifecycle=running health=healthy health-summary=none\n"
+        "successful-start-order=sim_motor\n"
+        "active-resource-order=sim_motor\n"
+        "event-high-water-mark=3\n"
+        "latest-event=runtime running\n"
+    )
+
+    assert cli.main(["runtime", "stop", "--session", "alpha"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "session=alpha\nruntime=stopped\n"
+    assert captured.err == ""
+
+
+def test_runtime_cli_validation_and_missing_session_are_sanitized(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert (
+        cli.main(["runtime", "status", "--session", "../private"])
+        == RuntimeCliExitCode.INVALID_SESSION_ID
+    )
+    captured = capsys.readouterr()
+    assert captured.err == "error: runtime session ID is invalid\n"
+    assert "private" not in captured.err
+
+    async def missing(_session: str) -> StatusReply:
+        raise SessionNotRunningError
+
+    monkeypatch.setattr(cli, "request_status", missing)
+    assert (
+        cli.main(["runtime", "status", "--session", "missing"])
+        == RuntimeCliExitCode.SESSION_NOT_RUNNING
+    )
+    captured = capsys.readouterr()
+    assert captured.err == "error: runtime session is not running\n"
+
+    invalid = tmp_path / "secret-config.yaml"
+    invalid.write_text("credential: top-secret", encoding="utf-8")
+    assert (
+        cli.main(
+            ["runtime", "start", str(invalid), "--session", "alpha"]
+        )
+        == RuntimeCliExitCode.INVALID_CONFIGURATION
+    )
+    captured = capsys.readouterr()
+    assert captured.err == "error: runtime configuration is invalid\n"
+    assert "secret" not in captured.err
+    assert str(invalid) not in captured.err
 
 
 def test_hardware_preflight_is_deterministic_and_does_not_expose_transport(

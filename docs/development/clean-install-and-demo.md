@@ -49,8 +49,12 @@ a fresh Python 3.12 virtual environment, installs the wheel non-editably, and
 runs every child process from that external directory. It removes `PYTHONPATH`,
 disables user-site imports, confirms `hiyelx` resolves inside the temporary
 environment, copies and validates the canonical configuration, then executes
-the loopback SIM demo. Temporary build and environment files are removed after
-both success and failure.
+the loopback SIM demo. It also starts the installed wheel's simulation runtime
+as a foreground subprocess, obtains the canonical status from a second
+installed CLI process, requests stop from a third, requires successful owner
+exit, and confirms that the private session artifacts disappeared. Temporary
+build, environment, process, socket, and session files are removed after both
+success and failure.
 
 Successful evidence is concise:
 
@@ -69,8 +73,9 @@ only one optional final line-feed difference.
 ## Troubleshooting boundaries
 
 - `blocked: ...` means the environment prevented Python acquisition, package
-  installation, or IPv4 loopback binding. Restore the required host capability
-  and rerun; do not weaken the verifier or production transport boundary.
+  installation, IPv4 loopback binding, or local Unix-domain socket execution.
+  Restore the required host capability and rerun; do not weaken the verifier or
+  production transport boundary.
 - `error: clean-install verification failed` means packaging, import isolation,
   command exit status, configuration validation, or transcript evidence did not
   match the contract. Run the normal quality gate and inspect locally without
@@ -82,6 +87,7 @@ only one optional final line-feed difference.
 
 This is one Python 3.12, software-only packaging smoke gate. It is not a release
 pipeline, platform matrix, remote deployment, performance test, hardware test,
-hard-real-time guarantee, or certified functional-safety claim. The gRPC server
-remains unauthenticated and restricted to literal IPv4 loopback. Physical
-XL430 acceptance and the Real Reference Driver milestone remain deferred.
+hard-real-time guarantee, or certified functional-safety claim. The demo gRPC
+server remains unauthenticated and restricted to literal IPv4 loopback. The
+RTO-2 control socket remains local to the current host and user. Physical XL430
+acceptance and the Real Reference Driver milestone remain deferred.
