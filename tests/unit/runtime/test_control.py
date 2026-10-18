@@ -619,5 +619,5 @@ def _artifact_snapshot(directory: Path) -> dict[str, tuple[int, int, int, int]]:
 
 @pytest.fixture
 def short_state_directory() -> Iterator[Path]:
-    with tempfile.TemporaryDirectory(prefix="hiyelx-rto2-", dir="/private/tmp") as path:
+    with tempfile.TemporaryDirectory(prefix="hiyelx-rto2-") as path:
         yield Path(path)
