@@ -854,18 +854,19 @@ async def run_local_runtime(
                 await operations.start()
                 control_server = LocalControlServer(owned.layout, operations, coordinator)
                 await control_server.start()
+                try:
+                    loop.add_signal_handler(signal.SIGINT, coordinator.request_local_stop)
+                    signal_installed = True
+                except (NotImplementedError, RuntimeError) as error:
+                    raise UnsupportedPlatformError from error
                 owned.publish(fingerprint)
                 if ready is not None:
                     ready(validated_session)
+            except UnsupportedPlatformError:
+                raise
             except Exception as error:
                 raise RuntimeOwnerStartupError from error
             ready_published = True
-
-            try:
-                loop.add_signal_handler(signal.SIGINT, coordinator.request_local_stop)
-                signal_installed = True
-            except (NotImplementedError, RuntimeError) as error:
-                raise UnsupportedPlatformError from error
 
             await coordinator.requested.wait()
             control_server.stop_accepting()

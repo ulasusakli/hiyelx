@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import shutil
+import signal
 import socket
 import sqlite3
 import stat
@@ -764,6 +765,65 @@ async def test_pre_ready_control_server_failure_finalizes_startup_failed(
     assert records[0].result is RunResult.STARTUP_FAILED
     assert records[0].stop_reason is StopReason.STARTUP_FAILURE
     assert not (short_state_directory / "runtime-failure").exists()
+
+
+@pytest.mark.asyncio
+async def test_signal_handler_precedes_readiness_and_restores_on_startup_failure(
+    short_state_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history_root = (
+        short_state_directory.parent
+        / f"{short_state_directory.name}-history-signal-readiness"
+    )
+    events: list[str] = []
+    loop = asyncio.get_running_loop()
+    original_publish = control.OwnedSession.publish
+
+    def add_signal_handler(
+        signum: signal.Signals,
+        callback: object,
+    ) -> None:
+        assert signum is signal.SIGINT
+        assert callable(callback)
+        events.append("signal-installed")
+
+    def remove_signal_handler(signum: signal.Signals) -> bool:
+        assert signum is signal.SIGINT
+        events.append("signal-restored")
+        return True
+
+    def publish(owned: control.OwnedSession, fingerprint: str) -> None:
+        events.append("session-published")
+        original_publish(owned, fingerprint)
+
+    def fail_after_readiness(_session: str) -> None:
+        events.append("ready")
+        raise RuntimeError("private readiness failure")
+
+    monkeypatch.setattr(loop, "add_signal_handler", add_signal_handler)
+    monkeypatch.setattr(loop, "remove_signal_handler", remove_signal_handler)
+    monkeypatch.setattr(control.OwnedSession, "publish", publish)
+
+    with pytest.raises(control.RuntimeOwnerStartupError):
+        await run_local_runtime(
+            _simulation_config(),
+            "signal-readiness",
+            state_directory=short_state_directory,
+            history_directory=history_root,
+            ready=fail_after_readiness,
+        )
+
+    assert events == [
+        "signal-installed",
+        "session-published",
+        "ready",
+        "signal-restored",
+    ]
+    record = list_runs(root=history_root)[0]
+    assert record.result is RunResult.STARTUP_FAILED
+    assert record.stop_reason is StopReason.STARTUP_FAILURE
+    assert not (short_state_directory / "signal-readiness").exists()
 
 
 @pytest.mark.asyncio
