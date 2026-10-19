@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 from collections.abc import Sequence
 from importlib.resources import as_file, files
@@ -29,6 +30,7 @@ from hiyelx.runtime.control import (
     InvalidRuntimeControlConfigurationError,
     InvalidSessionIdError,
     RuntimeCliExitCode,
+    RuntimeHistoryError,
     RuntimeOwnerCleanupError,
     RuntimeOwnerStartupError,
     SessionAlreadyRunningError,
@@ -41,6 +43,17 @@ from hiyelx.runtime.control import (
     run_local_runtime,
     validate_session_id,
     validate_simulation_config,
+)
+from hiyelx.runtime.history import (
+    DEFAULT_LIMIT,
+    HistoryError,
+    InvalidHistoryLimitError,
+    InvalidRunIdError,
+    RunNotFoundError,
+    RunRecord,
+    get_run,
+    list_runs,
+    validate_limit,
 )
 from hiyelx.sdk import MotorDriverScaffoldError, create_motor_driver_scaffold
 from hiyelx.simulation import SimulatedMotor, register_simulated_motor
@@ -88,6 +101,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _runtime_status(session=arguments.session)
         if arguments.runtime == "stop":
             return _runtime_stop(session=arguments.session)
+        if arguments.runtime == "runs":
+            if arguments.runs == "list":
+                return _runtime_runs_list(limit=arguments.limit, as_json=arguments.json)
+            if arguments.runs == "show":
+                return _runtime_runs_show(arguments.run_id, as_json=arguments.json)
 
     parser.error("a command is required")
 
@@ -155,6 +173,17 @@ def _parser() -> argparse.ArgumentParser:
         help="request ordered safe-stop and shutdown",
     )
     runtime_stop.add_argument("--session", required=True)
+    runtime_runs = runtime_commands.add_parser(
+        "runs",
+        help="inspect durable local runtime runs",
+    )
+    runs_commands = runtime_runs.add_subparsers(dest="runs")
+    runs_list = runs_commands.add_parser("list", help="list recent runtime runs")
+    runs_list.add_argument("--limit", type=_history_limit, default=DEFAULT_LIMIT)
+    runs_list.add_argument("--json", action="store_true")
+    runs_show = runs_commands.add_parser("show", help="show one runtime run")
+    runs_show.add_argument("run_id")
+    runs_show.add_argument("--json", action="store_true")
     return parser
 
 
@@ -193,6 +222,11 @@ def _runtime_start(path: Path, *, session: str) -> int:
         return _runtime_failure(
             RuntimeCliExitCode.RUNTIME_CLEANUP_FAILURE,
             "runtime cleanup failed",
+        )
+    except RuntimeHistoryError:
+        return _runtime_failure(
+            RuntimeCliExitCode.HISTORY_STORE_FAILURE,
+            "runtime history failed",
         )
     except (ControlProtocolError, UnsafeSessionPathError, OSError):
         return _runtime_failure(
@@ -257,6 +291,11 @@ def _runtime_stop(*, session: str) -> int:
             RuntimeCliExitCode.RUNTIME_CLEANUP_FAILURE,
             "runtime cleanup failed",
         )
+    except RuntimeHistoryError:
+        return _runtime_failure(
+            RuntimeCliExitCode.HISTORY_STORE_FAILURE,
+            "runtime history failed",
+        )
     except (ControlProtocolError, UnsafeSessionPathError, OSError):
         return _runtime_failure(
             RuntimeCliExitCode.CONTROL_PROTOCOL_FAILURE,
@@ -265,6 +304,108 @@ def _runtime_stop(*, session: str) -> int:
     print(f"session={reply.session}")
     print("runtime=stopped")
     return RuntimeCliExitCode.SUCCESS
+
+
+def _runtime_runs_list(*, limit: int, as_json: bool) -> int:
+    try:
+        records = list_runs(limit=limit)
+    except HistoryError:
+        return _runtime_failure(
+            RuntimeCliExitCode.HISTORY_STORE_FAILURE,
+            "runtime history failed",
+        )
+    if as_json:
+        print(
+            json.dumps(
+                {"run_count": len(records), "runs": [_run_document(run) for run in records]},
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
+        return RuntimeCliExitCode.SUCCESS
+    print(f"run-count={len(records)}")
+    for record in records:
+        print(
+            f"run={record.run_id} session={record.session_id} "
+            f"result={record.result.value if record.result is not None else 'incomplete'} "
+            f"started-at={record.started_at} ended-at={record.ended_at or 'none'} "
+            "event-high-water-mark="
+            + (
+                str(record.event_high_water_mark)
+                if record.event_high_water_mark is not None
+                else "none"
+            )
+        )
+    return RuntimeCliExitCode.SUCCESS
+
+
+def _runtime_runs_show(run_id: str, *, as_json: bool) -> int:
+    try:
+        record = get_run(run_id)
+    except (InvalidRunIdError, RunNotFoundError):
+        return _runtime_failure(
+            RuntimeCliExitCode.RUN_NOT_FOUND,
+            "runtime run is not found",
+        )
+    except HistoryError:
+        return _runtime_failure(
+            RuntimeCliExitCode.HISTORY_STORE_FAILURE,
+            "runtime history failed",
+        )
+    if as_json:
+        print(
+            json.dumps(
+                _run_document(record),
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
+    else:
+        for line in _render_run(record):
+            print(line)
+    return RuntimeCliExitCode.SUCCESS
+
+
+def _render_run(record: RunRecord) -> tuple[str, ...]:
+    return (
+        f"schema-version={record.schema_version}",
+        f"run={record.run_id}",
+        f"session={record.session_id}",
+        f"config-fingerprint={record.config_fingerprint}",
+        f"package-version={record.package_version}",
+        f"platform={record.platform}",
+        f"started-at={record.started_at}",
+        f"ended-at={record.ended_at or 'none'}",
+        f"result={record.result.value if record.result is not None else 'incomplete'}",
+        f"stop-reason={record.stop_reason.value if record.stop_reason is not None else 'none'}",
+        "event-high-water-mark="
+        f"{record.event_high_water_mark if record.event_high_water_mark is not None else 'none'}",
+    )
+
+
+def _run_document(record: RunRecord) -> dict[str, object]:
+    return {
+        "config_fingerprint": record.config_fingerprint,
+        "ended_at": record.ended_at,
+        "event_high_water_mark": record.event_high_water_mark,
+        "package_version": record.package_version,
+        "platform": record.platform,
+        "result": record.result.value if record.result is not None else None,
+        "run_id": record.run_id,
+        "schema_version": record.schema_version,
+        "session_id": record.session_id,
+        "started_at": record.started_at,
+        "stop_reason": record.stop_reason.value if record.stop_reason is not None else None,
+    }
+
+
+def _history_limit(value: str) -> int:
+    try:
+        return validate_limit(int(value))
+    except (ValueError, InvalidHistoryLimitError) as error:
+        raise argparse.ArgumentTypeError("limit must be between 1 and 100") from error
 
 
 def _print_runtime_ready(session: str) -> None:

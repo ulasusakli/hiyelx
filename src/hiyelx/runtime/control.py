@@ -18,6 +18,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Protocol, cast
 
+from hiyelx import __version__
 from hiyelx.config import RuntimeConfig
 from hiyelx.models import ModelRegistry
 from hiyelx.resources import (
@@ -27,6 +28,14 @@ from hiyelx.resources import (
     ResourceOperation,
 )
 from hiyelx.runtime.errors import RuntimeTopologyError
+from hiyelx.runtime.history import (
+    HistoryError,
+    HistoryStore,
+    RunRecord,
+    RunResult,
+    StopReason,
+    open_writer,
+)
 from hiyelx.runtime.operations import RuntimeOperations, RuntimeOperationsSnapshot
 from hiyelx.runtime.planning import plan_startup
 from hiyelx.runtime.state import RuntimeManagerState
@@ -93,6 +102,8 @@ class RuntimeCliExitCode(IntEnum):
     RUNTIME_STARTUP_FAILURE = 7
     RUNTIME_CLEANUP_FAILURE = 8
     UNSUPPORTED_PLATFORM = 9
+    HISTORY_STORE_FAILURE = 10
+    RUN_NOT_FOUND = 11
 
 
 class RuntimeControlError(Exception):
@@ -143,6 +154,10 @@ class RuntimeOwnerCleanupError(RuntimeControlError):
     """Raised after every available cleanup step was attempted."""
 
 
+class RuntimeHistoryError(RuntimeControlError):
+    """Raised for a sanitized durable run-history failure."""
+
+
 class ControlCommand(StrEnum):
     """Commands supported by the private RTO-2 protocol."""
 
@@ -156,6 +171,7 @@ class ControlErrorCode(StrEnum):
     INVALID_REQUEST = "invalid_request"
     UNKNOWN_COMMAND = "unknown_command"
     RUNTIME_CLEANUP_FAILED = "runtime_cleanup_failed"
+    RUNTIME_HISTORY_FAILED = "runtime_history_failed"
     INTERNAL_FAILURE = "internal_failure"
 
 
@@ -163,6 +179,7 @@ _CONTROL_FAILURE_MESSAGES = {
     ControlErrorCode.INVALID_REQUEST: "control request is invalid",
     ControlErrorCode.UNKNOWN_COMMAND: "control command is unknown",
     ControlErrorCode.RUNTIME_CLEANUP_FAILED: "runtime cleanup failed",
+    ControlErrorCode.RUNTIME_HISTORY_FAILED: "runtime history failed",
     ControlErrorCode.INTERNAL_FAILURE: "control operation failed",
 }
 
@@ -337,15 +354,20 @@ class StopCoordinator:
 
     def __init__(self) -> None:
         self.requested = asyncio.Event()
+        self.stop_reason: StopReason | None = None
         self._result: asyncio.Future[ControlReply] = (
             asyncio.get_running_loop().create_future()
         )
 
     async def request_stop(self) -> ControlReply:
+        if self.stop_reason is None:
+            self.stop_reason = StopReason.CLI_STOP
         self.requested.set()
         return await asyncio.shield(self._result)
 
     def request_local_stop(self) -> None:
+        if self.stop_reason is None:
+            self.stop_reason = StopReason.SIGINT
         self.requested.set()
 
     def complete(self, reply: ControlReply) -> None:
@@ -781,6 +803,8 @@ async def request_stop(
         and reply.code is ControlErrorCode.RUNTIME_CLEANUP_FAILED
     ):
         raise RuntimeOwnerCleanupError
+    if isinstance(reply, FailureReply) and reply.code is ControlErrorCode.RUNTIME_HISTORY_FAILED:
+        raise RuntimeHistoryError
     raise ControlProtocolError
 
 
@@ -789,6 +813,7 @@ async def run_local_runtime(
     session: str,
     *,
     state_directory: Path | None = None,
+    history_directory: Path | None = None,
     ready: Callable[[str], None] | None = None,
 ) -> None:
     """Own one foreground simulation runtime until explicit stop or Ctrl-C."""
@@ -797,79 +822,216 @@ async def run_local_runtime(
     validate_simulation_config(config)
     fingerprint = configuration_fingerprint(config)
     owned = reserve_session(validated_session, state_directory=state_directory)
+    history_store: HistoryStore | None = None
+    run_record: RunRecord | None = None
+    finalization_attempted = False
     operations: RuntimeOperations | None = None
     control_server: LocalControlServer | None = None
     coordinator = StopCoordinator()
     runtime_cleaned = False
     session_cleaned = False
     signal_installed = False
+    ready_published = False
+    cleanup_succeeded: bool | None = None
     loop = asyncio.get_running_loop()
 
     try:
-        registry = ModelRegistry()
-        register_simulated_motor(registry)
         try:
-            operations = RuntimeOperations(config, registry)
-            await operations.start()
-        except Exception as error:
-            raise RuntimeOwnerStartupError from error
-
-        control_server = LocalControlServer(owned.layout, operations, coordinator)
-        await control_server.start()
-        owned.publish(fingerprint)
-        if ready is not None:
-            ready(validated_session)
-
-        try:
-            loop.add_signal_handler(signal.SIGINT, coordinator.request_local_stop)
-            signal_installed = True
-        except (NotImplementedError, RuntimeError) as error:
-            raise UnsupportedPlatformError from error
-
-        await coordinator.requested.wait()
-        control_server.stop_accepting()
-        runtime_succeeded = await _cleanup_operations(operations)
-        runtime_cleaned = True
-        session_succeeded = owned.cleanup()
-        session_cleaned = session_succeeded
-        if runtime_succeeded and session_succeeded:
-            coordinator.complete(StopReply(validated_session))
-        else:
-            coordinator.complete(
-                FailureReply(
-                    ControlErrorCode.RUNTIME_CLEANUP_FAILED,
-                    "runtime cleanup failed",
-                )
-            )
-        await control_server.wait_handlers()
-        await control_server.close()
-        if not runtime_succeeded or not session_succeeded:
-            raise RuntimeOwnerCleanupError
-    finally:
-        if signal_installed:
-            loop.remove_signal_handler(signal.SIGINT)
-        cleanup_succeeded = True
-        if operations is not None and not runtime_cleaned:
-            cleanup_succeeded = await _cleanup_operations(operations)
-        if control_server is not None:
-            control_server.stop_accepting()
-        if not coordinator.completed:
-            coordinator.complete(
-                FailureReply(
-                    ControlErrorCode.RUNTIME_CLEANUP_FAILED,
-                    "runtime cleanup failed",
-                )
-            )
-        if control_server is not None:
             try:
-                await control_server.wait_handlers()
-                await control_server.close()
-            except Exception:
-                cleanup_succeeded = False
-        if not session_cleaned:
-            cleanup_succeeded = owned.cleanup(final=True) and cleanup_succeeded
-        if not cleanup_succeeded and sys.exc_info()[0] is None:
-            raise RuntimeOwnerCleanupError
+                history_store = open_writer(root=history_directory)
+                run_record = history_store.create_run(
+                    session_id=validated_session,
+                    config_fingerprint=fingerprint,
+                    package_version=__version__,
+                )
+            except HistoryError as error:
+                raise RuntimeHistoryError from error
+
+            registry = ModelRegistry()
+            register_simulated_motor(registry)
+            try:
+                operations = RuntimeOperations(config, registry)
+                await operations.start()
+                control_server = LocalControlServer(owned.layout, operations, coordinator)
+                await control_server.start()
+                owned.publish(fingerprint)
+                if ready is not None:
+                    ready(validated_session)
+            except Exception as error:
+                raise RuntimeOwnerStartupError from error
+            ready_published = True
+
+            try:
+                loop.add_signal_handler(signal.SIGINT, coordinator.request_local_stop)
+                signal_installed = True
+            except (NotImplementedError, RuntimeError) as error:
+                raise UnsupportedPlatformError from error
+
+            await coordinator.requested.wait()
+            control_server.stop_accepting()
+            runtime_succeeded = await _cleanup_operations(operations)
+            runtime_cleaned = True
+            session_succeeded = owned.cleanup()
+            session_cleaned = session_succeeded
+            cleanup_succeeded = runtime_succeeded and session_succeeded
+            finalization_attempted = True
+            history_succeeded = _finalize_run_history(
+                history_store,
+                run_record,
+                result=(
+                    RunResult.COMPLETED
+                    if cleanup_succeeded and coordinator.stop_reason is StopReason.CLI_STOP
+                    else RunResult.INTERRUPTED
+                    if cleanup_succeeded and coordinator.stop_reason is StopReason.SIGINT
+                    else RunResult.CLEANUP_FAILED
+                ),
+                stop_reason=(
+                    coordinator.stop_reason
+                    if cleanup_succeeded and coordinator.stop_reason is not None
+                    else StopReason.CLEANUP_FAILURE
+                ),
+                event_high_water_mark=_event_high_water_mark(operations),
+            )
+            if cleanup_succeeded and history_succeeded:
+                coordinator.complete(StopReply(validated_session))
+            elif cleanup_succeeded:
+                coordinator.complete(
+                    FailureReply(
+                        ControlErrorCode.RUNTIME_HISTORY_FAILED,
+                        "runtime history failed",
+                    )
+                )
+            else:
+                coordinator.complete(
+                    FailureReply(
+                        ControlErrorCode.RUNTIME_CLEANUP_FAILED,
+                        "runtime cleanup failed",
+                    )
+                )
+            await control_server.wait_handlers()
+            await control_server.close()
+            if not cleanup_succeeded:
+                raise RuntimeOwnerCleanupError
+            if not history_succeeded:
+                raise RuntimeHistoryError
+        finally:
+            active_error = sys.exc_info()[1]
+            cleanup_interruption: BaseException | None = None
+            final_cleanup_succeeded = (
+                True if cleanup_succeeded is None else cleanup_succeeded
+            )
+            if signal_installed:
+                try:
+                    loop.remove_signal_handler(signal.SIGINT)
+                except BaseException as error:
+                    final_cleanup_succeeded = False
+                    cleanup_interruption = error
+            if operations is not None and not runtime_cleaned:
+                try:
+                    final_cleanup_succeeded = await _cleanup_operations(operations)
+                except BaseException as error:
+                    final_cleanup_succeeded = False
+                    cleanup_interruption = error
+            if control_server is not None:
+                try:
+                    control_server.stop_accepting()
+                except BaseException as error:
+                    final_cleanup_succeeded = False
+                    if cleanup_interruption is None:
+                        cleanup_interruption = error
+            if not coordinator.completed:
+                try:
+                    coordinator.complete(
+                        FailureReply(
+                            ControlErrorCode.RUNTIME_CLEANUP_FAILED,
+                            "runtime cleanup failed",
+                        )
+                    )
+                except BaseException as error:
+                    final_cleanup_succeeded = False
+                    if cleanup_interruption is None:
+                        cleanup_interruption = error
+            if control_server is not None:
+                try:
+                    await control_server.wait_handlers()
+                    await control_server.close()
+                except BaseException as error:
+                    final_cleanup_succeeded = False
+                    if cleanup_interruption is None:
+                        cleanup_interruption = error
+            if not session_cleaned:
+                try:
+                    final_cleanup_succeeded = (
+                        owned.cleanup(final=True) and final_cleanup_succeeded
+                    )
+                except BaseException as error:
+                    final_cleanup_succeeded = False
+                    if cleanup_interruption is None:
+                        cleanup_interruption = error
+            if (
+                history_store is not None
+                and run_record is not None
+                and not finalization_attempted
+            ):
+                if not ready_published:
+                    result = RunResult.STARTUP_FAILED
+                    reason = StopReason.STARTUP_FAILURE
+                elif not final_cleanup_succeeded:
+                    result = RunResult.CLEANUP_FAILED
+                    reason = StopReason.CLEANUP_FAILURE
+                elif not isinstance(active_error, RuntimeHistoryError):
+                    result = RunResult.RUNTIME_FAILED
+                    reason = StopReason.RUNTIME_FAILURE
+                else:
+                    result = None
+                    reason = None
+                if result is not None and reason is not None:
+                    finalization_attempted = True
+                    _finalize_run_history(
+                        history_store,
+                        run_record,
+                        result=result,
+                        stop_reason=reason,
+                        event_high_water_mark=_event_high_water_mark(operations),
+                    )
+            if cleanup_interruption is not None and active_error is None:
+                raise cleanup_interruption
+            if not final_cleanup_succeeded and isinstance(active_error, RuntimeHistoryError):
+                raise RuntimeOwnerCleanupError from active_error
+            if not final_cleanup_succeeded and active_error is None:
+                raise RuntimeOwnerCleanupError
+    finally:
+        if history_store is not None:
+            history_store.close()
+
+
+def _event_high_water_mark(operations: RuntimeOperations | None) -> int | None:
+    if operations is None:
+        return None
+    try:
+        return operations.snapshot().event_high_water_mark
+    except Exception:
+        return None
+
+
+def _finalize_run_history(
+    store: HistoryStore,
+    record: RunRecord,
+    *,
+    result: RunResult,
+    stop_reason: StopReason,
+    event_high_water_mark: int | None,
+) -> bool:
+    try:
+        store.finalize_run(
+            record.run_id,
+            result=result,
+            stop_reason=stop_reason,
+            event_high_water_mark=event_high_water_mark,
+        )
+    except HistoryError:
+        return False
+    return True
 
 
 async def _cleanup_operations(operations: RuntimeOperations) -> bool:

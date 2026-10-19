@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,13 @@ from hiyelx.runtime.control import (
     SessionNotRunningError,
     StatusReply,
     StopReply,
+)
+from hiyelx.runtime.history import (
+    HistoryStoreError,
+    RunNotFoundError,
+    RunRecord,
+    RunResult,
+    StopReason,
 )
 from hiyelx.simulation import SimulatedMotor
 
@@ -163,6 +171,134 @@ def test_runtime_cli_validation_and_missing_session_are_sanitized(
     assert str(invalid) not in captured.err
 
 
+def test_runtime_runs_list_text_limit_and_canonical_json(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record = _run_record()
+    limits: list[int] = []
+
+    def fake_list_runs(*, limit: int) -> tuple[RunRecord, ...]:
+        limits.append(limit)
+        return (record,)
+
+    monkeypatch.setattr(cli, "list_runs", fake_list_runs)
+    assert cli.main(["runtime", "runs", "list"]) == RuntimeCliExitCode.SUCCESS
+    captured = capsys.readouterr()
+    assert limits == [20]
+    assert captured.err == ""
+    assert captured.out == (
+        "run-count=1\n"
+        f"run={record.run_id} session=alpha result=completed "
+        f"started-at={record.started_at} ended-at={record.ended_at} "
+        "event-high-water-mark=3\n"
+    )
+
+    assert (
+        cli.main(["runtime", "runs", "list", "--limit", "1", "--json"])
+        == RuntimeCliExitCode.SUCCESS
+    )
+    captured = capsys.readouterr()
+    assert limits == [20, 1]
+    assert captured.err == ""
+    document = json.loads(captured.out)
+    assert document == {"run_count": 1, "runs": [cli._run_document(record)]}  # pyright: ignore[reportPrivateUsage]
+    assert captured.out == json.dumps(
+        document,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ) + "\n"
+
+
+@pytest.mark.parametrize("limit", ("0", "101", "true"))
+def test_runtime_runs_list_rejects_invalid_limits(
+    limit: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as caught:
+        cli.main(["runtime", "runs", "list", "--limit", limit])
+    assert caught.value.code == RuntimeCliExitCode.INVALID_CONFIGURATION
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "limit must be between 1 and 100" in captured.err
+
+
+def test_runtime_runs_show_complete_and_incomplete(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    complete = _run_record()
+
+    def get_complete(_run_id: str) -> RunRecord:
+        return complete
+
+    monkeypatch.setattr(cli, "get_run", get_complete)
+    assert (
+        cli.main(["runtime", "runs", "show", complete.run_id])
+        == RuntimeCliExitCode.SUCCESS
+    )
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out == "\n".join(cli._render_run(complete)) + "\n"  # pyright: ignore[reportPrivateUsage]
+
+    incomplete = RunRecord(
+        complete.schema_version,
+        complete.run_id,
+        complete.session_id,
+        complete.config_fingerprint,
+        complete.package_version,
+        complete.platform,
+        complete.started_at,
+        None,
+        None,
+        None,
+        None,
+    )
+    def get_incomplete(_run_id: str) -> RunRecord:
+        return incomplete
+
+    monkeypatch.setattr(cli, "get_run", get_incomplete)
+    assert (
+        cli.main(["runtime", "runs", "show", incomplete.run_id, "--json"])
+        == RuntimeCliExitCode.SUCCESS
+    )
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert json.loads(captured.out)["result"] is None
+    assert "ended-at=none" in "\n".join(cli._render_run(incomplete))  # pyright: ignore[reportPrivateUsage]
+    assert "result=incomplete" in "\n".join(cli._render_run(incomplete))  # pyright: ignore[reportPrivateUsage]
+
+
+def test_runtime_runs_errors_are_fixed_and_sanitized(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def missing(_run_id: str) -> RunRecord:
+        raise RunNotFoundError("private-id")
+
+    monkeypatch.setattr(cli, "get_run", missing)
+    assert (
+        cli.main(["runtime", "runs", "show", "not-a-uuid"])
+        == RuntimeCliExitCode.RUN_NOT_FOUND
+    )
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "error: runtime run is not found\n"
+    assert "private" not in captured.err
+
+    def corrupt(*, limit: int) -> tuple[RunRecord, ...]:
+        del limit
+        raise HistoryStoreError("/private/path database malformed")
+
+    monkeypatch.setattr(cli, "list_runs", corrupt)
+    assert cli.main(["runtime", "runs", "list"]) == 10
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "error: runtime history failed\n"
+    assert "private" not in captured.err
+
+
 def test_hardware_preflight_is_deterministic_and_does_not_expose_transport(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -199,6 +335,22 @@ evidence_session_id: hca-hw0-preflight
     assert "private-device" not in first.out
     assert "credential" not in first.out
     assert "token" not in first.out
+
+
+def _run_record() -> RunRecord:
+    return RunRecord(
+        schema_version=1,
+        run_id="11111111-1111-4111-8111-111111111111",
+        session_id="alpha",
+        config_fingerprint="a" * 64,
+        package_version="0.2.0a1",
+        platform="linux",
+        started_at="2026-10-18T10:11:12.123456Z",
+        ended_at="2026-10-18T10:12:13.123456Z",
+        result=RunResult.COMPLETED,
+        stop_reason=StopReason.CLI_STOP,
+        event_high_water_mark=3,
+    )
 
 
 def test_hardware_preflight_failure_is_sanitized(

@@ -1,9 +1,12 @@
 import asyncio
 import json
 import os
+import shutil
 import socket
+import sqlite3
 import stat
 import tempfile
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
@@ -53,6 +56,12 @@ from hiyelx.runtime.control import (
     status_reply,
     validate_session_id,
     validate_simulation_config,
+)
+from hiyelx.runtime.history import (
+    HistoryStoreError,
+    RunResult,
+    StopReason,
+    list_runs,
 )
 from hiyelx.runtime.operations import RuntimeOperations
 
@@ -552,15 +561,718 @@ async def test_hardware_model_is_rejected_before_runtime_construction(
         constructed = True
 
     monkeypatch.setattr(control, "RuntimeOperations", forbidden_construction)
+    history_root = short_state_directory.parent / f"{short_state_directory.name}-history"
     with pytest.raises(UnsupportedRuntimeModelError):
         await run_local_runtime(
             _config_for_model("motor.dynamixel.xl430_w250_t"),
             "hardware",
             state_directory=short_state_directory,
+            history_directory=history_root,
         )
     assert not constructed
     entries = await asyncio.to_thread(lambda: tuple(short_state_directory.iterdir()))
     assert entries == ()
+    assert not history_root.exists()
+
+
+@pytest.mark.asyncio
+async def test_history_failure_prevents_runtime_construction_and_cleans_session(
+    short_state_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    constructed = False
+
+    def fail_history(**_kwargs: object) -> None:
+        raise HistoryStoreError("private sqlite detail")
+
+    def forbidden_construction(*_args: object, **_kwargs: object) -> None:
+        nonlocal constructed
+        constructed = True
+
+    monkeypatch.setattr(control, "open_writer", fail_history)
+    monkeypatch.setattr(control, "RuntimeOperations", forbidden_construction)
+    history_root = short_state_directory.parent / f"{short_state_directory.name}-history"
+    with pytest.raises(control.RuntimeHistoryError):
+        await run_local_runtime(
+            _simulation_config(),
+            "alpha",
+            state_directory=short_state_directory,
+            history_directory=history_root,
+        )
+    assert not constructed
+    assert not (short_state_directory / "alpha").exists()
+
+
+@pytest.mark.asyncio
+async def test_successful_stop_finalizes_once(
+    short_state_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history_root = short_state_directory.parent / f"{short_state_directory.name}-history-once"
+    finalize_calls = 0
+    original_finalize = control.HistoryStore.finalize_run
+
+    class LocalStopServer:
+        def __init__(
+            self,
+            _layout: object,
+            _operations: object,
+            coordinator: StopCoordinator,
+        ) -> None:
+            self._coordinator = coordinator
+
+        async def start(self) -> None:
+            self._coordinator.stop_reason = StopReason.CLI_STOP
+            self._coordinator.requested.set()
+
+        def stop_accepting(self) -> None:
+            pass
+
+        async def wait_handlers(self) -> None:
+            pass
+
+        async def close(self) -> None:
+            pass
+
+    def count_finalize(
+        store: control.HistoryStore,
+        run_id: str,
+        *,
+        result: RunResult,
+        stop_reason: StopReason,
+        event_high_water_mark: int | None,
+    ) -> object:
+        nonlocal finalize_calls
+        finalize_calls += 1
+        return original_finalize(
+            store,
+            run_id,
+            result=result,
+            stop_reason=stop_reason,
+            event_high_water_mark=event_high_water_mark,
+        )
+
+    monkeypatch.setattr(control, "LocalControlServer", LocalStopServer)
+    monkeypatch.setattr(control.HistoryStore, "finalize_run", count_finalize)
+    await run_local_runtime(
+        _simulation_config(),
+        "successful-finalize",
+        state_directory=short_state_directory,
+        history_directory=history_root,
+    )
+
+    assert finalize_calls == 1
+    record = list_runs(root=history_root)[0]
+    assert record.result is RunResult.COMPLETED
+    assert record.stop_reason is StopReason.CLI_STOP
+
+
+@pytest.mark.asyncio
+async def test_startup_and_rollback_cleanup_failure_keeps_startup_precedence(
+    short_state_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history_root = (
+        short_state_directory.parent / f"{short_state_directory.name}-history-startup-cleanup"
+    )
+
+    class FailingStartupOperations:
+        def __init__(self, *_args: object) -> None:
+            self.safe_stop_calls = 0
+            self.shutdown_calls = 0
+            instances.append(self)
+
+        async def start(self) -> None:
+            raise RuntimeError("private startup detail")
+
+        def snapshot(self) -> RuntimeOperationsSnapshot:
+            return cast(
+                RuntimeOperationsSnapshot,
+                type(
+                    "Snapshot",
+                    (),
+                    {
+                        "manager_state": RuntimeManagerState.RUNNING,
+                        "event_high_water_mark": None,
+                    },
+                )(),
+            )
+
+        async def safe_stop(self) -> None:
+            self.safe_stop_calls += 1
+            raise RuntimeError("private rollback detail")
+
+        async def shutdown(self) -> None:
+            self.shutdown_calls += 1
+            raise RuntimeError("private rollback detail")
+
+    instances: list[FailingStartupOperations] = []
+    monkeypatch.setattr(control, "RuntimeOperations", FailingStartupOperations)
+    with pytest.raises(control.RuntimeOwnerStartupError):
+        await run_local_runtime(
+            _simulation_config(),
+            "startup-cleanup",
+            state_directory=short_state_directory,
+            history_directory=history_root,
+        )
+
+    assert len(instances) == 1
+    assert instances[0].safe_stop_calls == 1
+    assert instances[0].shutdown_calls == 1
+    record = list_runs(root=history_root)[0]
+    assert record.result is RunResult.STARTUP_FAILED
+    assert record.stop_reason is StopReason.STARTUP_FAILURE
+
+
+@pytest.mark.asyncio
+async def test_pre_ready_control_server_failure_finalizes_startup_failed(
+    short_state_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history_root = (
+        short_state_directory.parent
+        / f"{short_state_directory.name}-history-runtime-failure"
+    )
+
+    class FailingServer:
+        def __init__(self, *_args: object) -> None:
+            pass
+
+        async def start(self) -> None:
+            raise ControlProtocolError
+
+        def stop_accepting(self) -> None:
+            pass
+
+        async def wait_handlers(self) -> None:
+            pass
+
+        async def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(control, "LocalControlServer", FailingServer)
+    with pytest.raises(control.RuntimeOwnerStartupError):
+        await run_local_runtime(
+            _simulation_config(),
+            "runtime-failure",
+            state_directory=short_state_directory,
+            history_directory=history_root,
+        )
+
+    records = list_runs(root=history_root)
+    assert len(records) == 1
+    assert records[0].result is RunResult.STARTUP_FAILED
+    assert records[0].stop_reason is StopReason.STARTUP_FAILURE
+    assert not (short_state_directory / "runtime-failure").exists()
+
+
+@pytest.mark.asyncio
+async def test_post_ready_owner_failure_finalizes_runtime_failed(
+    short_state_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history_root = (
+        short_state_directory.parent
+        / f"{short_state_directory.name}-history-post-ready-failure"
+    )
+    published: list[str] = []
+
+    class FailingWait:
+        async def wait(self) -> None:
+            raise ControlProtocolError
+
+        def set(self) -> None:
+            pass
+
+    class PostReadyCoordinator(StopCoordinator):
+        def __init__(self) -> None:
+            super().__init__()
+            self.requested = cast(asyncio.Event, FailingWait())
+
+    monkeypatch.setattr(control, "StopCoordinator", PostReadyCoordinator)
+    with pytest.raises(ControlProtocolError):
+        await run_local_runtime(
+            _simulation_config(),
+            "post-ready-failure",
+            state_directory=short_state_directory,
+            history_directory=history_root,
+            ready=published.append,
+        )
+
+    assert published == ["post-ready-failure"]
+    record = list_runs(root=history_root)[0]
+    assert record.result is RunResult.RUNTIME_FAILED
+    assert record.stop_reason is StopReason.RUNTIME_FAILURE
+    assert not (short_state_directory / "post-ready-failure").exists()
+
+
+@pytest.mark.asyncio
+async def test_task_cancellation_closes_history_store_and_releases_session(
+    short_state_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history_root = short_state_directory.parent / f"{short_state_directory.name}-history-cancel"
+    ready = asyncio.Event()
+    close_calls = 0
+    original_close = control.HistoryStore.close
+
+    def count_close(store: control.HistoryStore) -> None:
+        nonlocal close_calls
+        close_calls += 1
+        original_close(store)
+
+    monkeypatch.setattr(control.HistoryStore, "close", count_close)
+    task = asyncio.create_task(
+        run_local_runtime(
+            _simulation_config(),
+            "cancelled",
+            state_directory=short_state_directory,
+            history_directory=history_root,
+            ready=lambda _session: ready.set(),
+        )
+    )
+    await asyncio.wait_for(ready.wait(), timeout=5)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert close_calls == 1
+    assert not (short_state_directory / "cancelled").exists()
+    reopened = control.open_writer(root=history_root)
+    reopened.close()
+
+
+@pytest.mark.asyncio
+async def test_unexpected_base_exception_closes_history_store(
+    short_state_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history_root = short_state_directory.parent / f"{short_state_directory.name}-history-base"
+    close_calls = 0
+    original_close = control.HistoryStore.close
+
+    class OwnerAbort(BaseException):
+        pass
+
+    class FailingWait:
+        async def wait(self) -> None:
+            raise OwnerAbort
+
+        def set(self) -> None:
+            pass
+
+    class BaseExceptionCoordinator(StopCoordinator):
+        def __init__(self) -> None:
+            super().__init__()
+            self.requested = cast(asyncio.Event, FailingWait())
+
+    def count_close(store: control.HistoryStore) -> None:
+        nonlocal close_calls
+        close_calls += 1
+        original_close(store)
+
+    monkeypatch.setattr(control, "StopCoordinator", BaseExceptionCoordinator)
+    monkeypatch.setattr(control.HistoryStore, "close", count_close)
+    with pytest.raises(OwnerAbort):
+        await run_local_runtime(
+            _simulation_config(),
+            "base-exception",
+            state_directory=short_state_directory,
+            history_directory=history_root,
+        )
+
+    assert close_calls == 1
+    assert not (short_state_directory / "base-exception").exists()
+    reopened = control.open_writer(root=history_root)
+    reopened.close()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_failure_finalizes_cleanup_failed(
+    short_state_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history_root = (
+        short_state_directory.parent
+        / f"{short_state_directory.name}-history-cleanup-failure"
+    )
+    finalize_calls = 0
+    original_finalize = control.HistoryStore.finalize_run
+
+    class LocalStopServer:
+        def __init__(
+            self,
+            _layout: object,
+            _operations: object,
+            coordinator: StopCoordinator,
+        ) -> None:
+            self._coordinator = coordinator
+
+        async def start(self) -> None:
+            self._coordinator.request_local_stop()
+
+        def stop_accepting(self) -> None:
+            pass
+
+        async def wait_handlers(self) -> None:
+            pass
+
+        async def close(self) -> None:
+            pass
+
+    async def failed_cleanup(_operations: RuntimeOperations) -> bool:
+        return False
+
+    def count_finalize(
+        store: control.HistoryStore,
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        nonlocal finalize_calls
+        finalize_calls += 1
+        return original_finalize(store, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(control, "LocalControlServer", LocalStopServer)
+    monkeypatch.setattr(control, "_cleanup_operations", failed_cleanup)
+    monkeypatch.setattr(control.HistoryStore, "finalize_run", count_finalize)
+    with pytest.raises(control.RuntimeOwnerCleanupError):
+        await run_local_runtime(
+            _simulation_config(),
+            "cleanup-failure",
+            state_directory=short_state_directory,
+            history_directory=history_root,
+        )
+
+    record = list_runs(root=history_root)[0]
+    assert record.result is RunResult.CLEANUP_FAILED
+    assert record.stop_reason is StopReason.CLEANUP_FAILURE
+    assert finalize_calls == 1
+    assert not (short_state_directory / "cleanup-failure").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ("safe_stop", "shutdown"))
+async def test_runtime_cleanup_step_failure_finalizes_cleanup_failed(
+    failure: str,
+    short_state_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history_root = (
+        short_state_directory.parent
+        / f"{short_state_directory.name}-history-{failure}"
+    )
+
+    class FailingCleanupOperations:
+        def __init__(self, *_args: object) -> None:
+            self.manager_state = RuntimeManagerState.STOPPED
+
+        async def start(self) -> None:
+            self.manager_state = RuntimeManagerState.RUNNING
+
+        def snapshot(self) -> RuntimeOperationsSnapshot:
+            return cast(
+                RuntimeOperationsSnapshot,
+                type(
+                    "Snapshot",
+                    (),
+                    {"manager_state": self.manager_state, "event_high_water_mark": 3},
+                )(),
+            )
+
+        async def safe_stop(self) -> None:
+            if failure == "safe_stop":
+                raise RuntimeError("private safe-stop detail")
+
+        async def shutdown(self) -> None:
+            if failure == "shutdown":
+                raise RuntimeError("private shutdown detail")
+            self.manager_state = RuntimeManagerState.STOPPED
+
+    class LocalStopServer:
+        def __init__(
+            self,
+            _layout: object,
+            _operations: object,
+            coordinator: StopCoordinator,
+        ) -> None:
+            self._coordinator = coordinator
+
+        async def start(self) -> None:
+            self._coordinator.request_local_stop()
+
+        def stop_accepting(self) -> None:
+            pass
+
+        async def wait_handlers(self) -> None:
+            pass
+
+        async def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(control, "RuntimeOperations", FailingCleanupOperations)
+    monkeypatch.setattr(control, "LocalControlServer", LocalStopServer)
+    with pytest.raises(control.RuntimeOwnerCleanupError):
+        await run_local_runtime(
+            _simulation_config(),
+            f"{failure}-failure",
+            state_directory=short_state_directory,
+            history_directory=history_root,
+        )
+
+    record = list_runs(root=history_root)[0]
+    assert record.result is RunResult.CLEANUP_FAILED
+    assert record.stop_reason is StopReason.CLEANUP_FAILURE
+
+
+@pytest.mark.asyncio
+async def test_session_cleanup_failure_is_retryable_and_finalizes_cleanup_failed(
+    short_state_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history_root = (
+        short_state_directory.parent
+        / f"{short_state_directory.name}-history-session-cleanup"
+    )
+    cleanup_calls: list[bool] = []
+    original_cleanup = control.OwnedSession.cleanup
+
+    class LocalStopServer:
+        def __init__(
+            self,
+            _layout: object,
+            _operations: object,
+            coordinator: StopCoordinator,
+        ) -> None:
+            self._coordinator = coordinator
+
+        async def start(self) -> None:
+            self._coordinator.request_local_stop()
+
+        def stop_accepting(self) -> None:
+            pass
+
+        async def wait_handlers(self) -> None:
+            pass
+
+        async def close(self) -> None:
+            pass
+
+    def fail_once(owned: control.OwnedSession, *, final: bool = False) -> bool:
+        cleanup_calls.append(final)
+        if not final:
+            return False
+        return original_cleanup(owned, final=True)
+
+    monkeypatch.setattr(control, "LocalControlServer", LocalStopServer)
+    monkeypatch.setattr(control.OwnedSession, "cleanup", fail_once)
+    with pytest.raises(control.RuntimeOwnerCleanupError):
+        await run_local_runtime(
+            _simulation_config(),
+            "session-cleanup",
+            state_directory=short_state_directory,
+            history_directory=history_root,
+        )
+
+    assert cleanup_calls == [False, True]
+    assert not (short_state_directory / "session-cleanup").exists()
+    record = list_runs(root=history_root)[0]
+    assert record.result is RunResult.CLEANUP_FAILED
+    assert record.stop_reason is StopReason.CLEANUP_FAILURE
+
+
+@pytest.mark.asyncio
+async def test_history_only_finalization_failure_does_not_skip_cleanup(
+    short_state_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history_root = (
+        short_state_directory.parent
+        / f"{short_state_directory.name}-history-finalize-failure"
+    )
+    original_cleanup = control._cleanup_operations  # pyright: ignore[reportPrivateUsage]
+    cleanup_calls = 0
+    finalize_calls = 0
+
+    class LocalStopServer:
+        def __init__(
+            self,
+            _layout: object,
+            _operations: object,
+            coordinator: StopCoordinator,
+        ) -> None:
+            self._coordinator = coordinator
+
+        async def start(self) -> None:
+            self._coordinator.request_local_stop()
+
+        def stop_accepting(self) -> None:
+            pass
+
+        async def wait_handlers(self) -> None:
+            pass
+
+        async def close(self) -> None:
+            pass
+
+    async def successful_cleanup(operations: RuntimeOperations) -> bool:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        return await original_cleanup(operations)
+
+    def fail_finalize(*_args: object, **_kwargs: object) -> None:
+        nonlocal finalize_calls
+        finalize_calls += 1
+        raise HistoryStoreError("private sqlite detail")
+
+    monkeypatch.setattr(control, "LocalControlServer", LocalStopServer)
+    monkeypatch.setattr(control, "_cleanup_operations", successful_cleanup)
+    monkeypatch.setattr(control.HistoryStore, "finalize_run", fail_finalize)
+    with pytest.raises(control.RuntimeHistoryError):
+        await run_local_runtime(
+            _simulation_config(),
+            "history-failure",
+            state_directory=short_state_directory,
+            history_directory=history_root,
+        )
+
+    assert cleanup_calls == 1
+    assert finalize_calls == 1
+    assert not (short_state_directory / "history-failure").exists()
+    record = list_runs(root=history_root)[0]
+    assert record.result is None
+    assert record.ended_at is None
+
+
+@pytest.mark.asyncio
+async def test_bounded_sqlite_contention_does_not_skip_runtime_cleanup(
+    short_state_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history_root = (
+        short_state_directory.parent / f"{short_state_directory.name}-history-contention"
+    )
+    lock_connection: sqlite3.Connection | None = None
+    cleanup_calls = 0
+    original_cleanup = control._cleanup_operations  # pyright: ignore[reportPrivateUsage]
+
+    class LockingStopServer:
+        def __init__(
+            self,
+            _layout: object,
+            _operations: object,
+            coordinator: StopCoordinator,
+        ) -> None:
+            self._coordinator = coordinator
+
+        async def start(self) -> None:
+            nonlocal lock_connection
+            lock_connection = sqlite3.connect(
+                history_root / "history.sqlite3",
+                timeout=0,
+                isolation_level=None,
+            )
+            lock_connection.execute("BEGIN IMMEDIATE")
+            self._coordinator.stop_reason = StopReason.CLI_STOP
+            self._coordinator.requested.set()
+
+        def stop_accepting(self) -> None:
+            pass
+
+        async def wait_handlers(self) -> None:
+            pass
+
+        async def close(self) -> None:
+            pass
+
+    async def count_cleanup(operations: RuntimeOperations) -> bool:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        return await original_cleanup(operations)
+
+    monkeypatch.setattr(control, "LocalControlServer", LockingStopServer)
+    monkeypatch.setattr(control, "_cleanup_operations", count_cleanup)
+    started = time.monotonic()
+    try:
+        with pytest.raises(control.RuntimeHistoryError):
+            await run_local_runtime(
+                _simulation_config(),
+                "history-contention",
+                state_directory=short_state_directory,
+                history_directory=history_root,
+            )
+    finally:
+        if lock_connection is not None:
+            lock_connection.rollback()
+            lock_connection.close()
+
+    assert 0.5 <= time.monotonic() - started < 3.0
+    assert cleanup_calls == 1
+    assert not (short_state_directory / "history-contention").exists()
+    record = list_runs(root=history_root)[0]
+    assert record.result is None
+    assert record.ended_at is None
+
+
+@pytest.mark.asyncio
+async def test_cleanup_and_history_failure_attempts_finalization_once(
+    short_state_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history_root = (
+        short_state_directory.parent
+        / f"{short_state_directory.name}-history-combined-failure"
+    )
+    finalize_calls = 0
+    cleanup_calls = 0
+
+    class LocalStopServer:
+        def __init__(
+            self,
+            _layout: object,
+            _operations: object,
+            coordinator: StopCoordinator,
+        ) -> None:
+            self._coordinator = coordinator
+
+        async def start(self) -> None:
+            self._coordinator.request_local_stop()
+
+        def stop_accepting(self) -> None:
+            pass
+
+        async def wait_handlers(self) -> None:
+            pass
+
+        async def close(self) -> None:
+            pass
+
+    async def failed_cleanup(_operations: RuntimeOperations) -> bool:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        return False
+
+    def fail_finalize(*_args: object, **_kwargs: object) -> None:
+        nonlocal finalize_calls
+        finalize_calls += 1
+        raise HistoryStoreError("private sqlite detail")
+
+    monkeypatch.setattr(control, "LocalControlServer", LocalStopServer)
+    monkeypatch.setattr(control, "_cleanup_operations", failed_cleanup)
+    monkeypatch.setattr(control.HistoryStore, "finalize_run", fail_finalize)
+    with pytest.raises(control.RuntimeOwnerCleanupError):
+        await run_local_runtime(
+            _simulation_config(),
+            "combined-failure",
+            state_directory=short_state_directory,
+            history_directory=history_root,
+        )
+
+    assert cleanup_calls == 1
+    assert finalize_calls == 1
+    assert not (short_state_directory / "combined-failure").exists()
+    record = list_runs(root=history_root)[0]
+    assert record.result is None
+    assert record.ended_at is None
 
 
 def test_missing_session_is_stable(tmp_path: Path) -> None:
@@ -620,4 +1332,9 @@ def _artifact_snapshot(directory: Path) -> dict[str, tuple[int, int, int, int]]:
 @pytest.fixture
 def short_state_directory() -> Iterator[Path]:
     with tempfile.TemporaryDirectory(prefix="hiyelx-rto2-") as path:
-        yield Path(path)
+        state = Path(path)
+        try:
+            yield state
+        finally:
+            for history_root in state.parent.glob(f"{state.name}-history*"):
+                shutil.rmtree(history_root)
