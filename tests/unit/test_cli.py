@@ -305,6 +305,78 @@ def test_runtime_runs_errors_are_fixed_and_sanitized(
     assert "private" not in captured.err
 
 
+def test_runtime_runs_prune_parser_and_exact_output(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    keeps: list[int] = []
+
+    def fake_prune(*, keep: int) -> int:
+        keeps.append(keep)
+        return 3 if keep == 0 else 0
+
+    monkeypatch.setattr(cli, "prune_runs", fake_prune)
+    assert (
+        cli.main(["runtime", "runs", "prune", "--keep", "0"])
+        == RuntimeCliExitCode.SUCCESS
+    )
+    captured = capsys.readouterr()
+    assert captured.out == "deleted-runs=3\n"
+    assert captured.err == ""
+
+    maximum = str((1 << 63) - 1)
+    assert (
+        cli.main(["runtime", "runs", "prune", "--keep", maximum])
+        == RuntimeCliExitCode.SUCCESS
+    )
+    captured = capsys.readouterr()
+    assert captured.out == "deleted-runs=0\n"
+    assert captured.err == ""
+    assert keeps == [0, (1 << 63) - 1]
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        ("runtime", "runs", "prune"),
+        ("runtime", "runs", "prune", "--keep", "-1"),
+        ("runtime", "runs", "prune", "--keep", str(1 << 63)),
+        ("runtime", "runs", "prune", "--keep", "not-an-integer"),
+    ),
+)
+def test_runtime_runs_prune_rejects_invalid_arguments(
+    capsys: pytest.CaptureFixture[str],
+    arguments: tuple[str, ...],
+) -> None:
+    with pytest.raises(SystemExit) as caught:
+        cli.main(list(arguments))
+    assert caught.value.code == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "usage:" in captured.err
+
+
+def test_runtime_runs_prune_history_failure_is_fixed_and_sanitized(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_prune(*, keep: int) -> int:
+        assert keep == 1
+        raise HistoryStoreError("private sqlite path /secret/history.sqlite3")
+
+    monkeypatch.setattr(cli, "prune_runs", fail_prune)
+    assert (
+        cli.main(["runtime", "runs", "prune", "--keep", "1"])
+        == RuntimeCliExitCode.HISTORY_STORE_FAILURE
+    )
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "error: runtime history failed\n"
+    assert "private" not in captured.err
+    assert "sqlite" not in captured.err
+    assert "secret" not in captured.err
+
+
 def test_runtime_events_text_cursor_limit_and_canonical_json(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,

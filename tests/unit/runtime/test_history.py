@@ -27,6 +27,7 @@ from hiyelx.runtime.history import (
     InvalidEventCursorError,
     InvalidEventLimitError,
     InvalidHistoryLimitError,
+    InvalidRetentionKeepError,
     InvalidRunIdError,
     RunAlreadyFinalizedError,
     RunNotFoundError,
@@ -38,12 +39,17 @@ from hiyelx.runtime.history import (
     list_runs,
     open_read_only,
     open_writer,
+    prune_runs,
     resolve_history_root,
+    validate_retention_keep,
 )
 from hiyelx.runtime.manager import RuntimeManager
 
 _RUN_A = "11111111-1111-4111-8111-111111111111"
 _RUN_B = "22222222-2222-4222-8222-222222222222"
+_RUN_C = "33333333-3333-4333-8333-333333333333"
+_RUN_D = "44444444-4444-4444-8444-444444444444"
+_RUN_E = "55555555-5555-4555-8555-555555555555"
 _START = datetime(2026, 10, 18, 10, 11, 12, 123456, tzinfo=UTC)
 _FINGERPRINT = "a" * 64
 
@@ -1195,6 +1201,311 @@ def _event_snapshot() -> tuple[RuntimeEvent, ...]:
     )
 
 
+def _seed_prune_store(
+    root: Path,
+    run_ids: tuple[str, ...],
+    *,
+    finalized_count: int,
+) -> None:
+    identifiers = iter(uuid.UUID(run_id) for run_id in run_ids)
+    store = open_writer(
+        root=root,
+        run_id_factory=lambda: next(identifiers),
+        clock=lambda: _START,
+        platform="linux",
+    )
+    try:
+        for index, run_id in enumerate(run_ids):
+            store.create_run(
+                session_id=f"session-{index}",
+                config_fingerprint=_FINGERPRINT,
+                package_version="0.2.0a1",
+            )
+            if index < finalized_count:
+                store.persist_events(run_id, _event_snapshot()[:1])
+                store.finalize_run(
+                    run_id,
+                    result=RunResult.COMPLETED,
+                    stop_reason=StopReason.CLI_STOP,
+                    event_high_water_mark=0,
+                )
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    ("keep", "expected_deleted", "retained_finalized"),
+    (
+        (0, 4, ()),
+        (1, 3, (_RUN_D,)),
+        (2, 2, (_RUN_D, _RUN_C)),
+        (4, 0, (_RUN_D, _RUN_C, _RUN_B, _RUN_A)),
+        ((1 << 63) - 1, 0, (_RUN_D, _RUN_C, _RUN_B, _RUN_A)),
+    ),
+)
+def test_prune_retains_newest_finalized_runs_and_all_incomplete_runs(
+    tmp_path: Path,
+    keep: int,
+    expected_deleted: int,
+    retained_finalized: tuple[str, ...],
+) -> None:
+    root = tmp_path / f"history-{keep}"
+    run_ids = (_RUN_A, _RUN_B, _RUN_C, _RUN_D, _RUN_E)
+    _seed_prune_store(root, run_ids, finalized_count=4)
+
+    assert prune_runs(root=root, keep=keep) == expected_deleted
+
+    records = list_runs(root=root)
+    assert tuple(
+        record.run_id for record in records if record.result is not None
+    ) == retained_finalized
+    incomplete = get_run(_RUN_E, root=root)
+    assert incomplete.result is None
+    assert incomplete.ended_at is None
+    for run_id in (_RUN_A, _RUN_B, _RUN_C, _RUN_D):
+        if run_id in retained_finalized:
+            assert tuple(event.sequence for event in list_events(run_id, root=root)) == (
+                0,
+            )
+        else:
+            with pytest.raises(RunNotFoundError):
+                get_run(run_id, root=root)
+            with pytest.raises(RunNotFoundError):
+                list_events(run_id, root=root)
+
+
+def test_prune_zero_finalized_runs_and_keep_validation(tmp_path: Path) -> None:
+    root = tmp_path / "history"
+    _seed_prune_store(root, (_RUN_A,), finalized_count=0)
+    assert prune_runs(root=root, keep=0) == 0
+    assert get_run(_RUN_A, root=root).result is None
+    assert validate_retention_keep(0) == 0
+    assert validate_retention_keep((1 << 63) - 1) == (1 << 63) - 1
+    for invalid in (-1, 1 << 63, True):
+        with pytest.raises(InvalidRetentionKeepError):
+            validate_retention_keep(invalid)  # type: ignore[arg-type]
+
+
+def test_prune_uses_started_at_before_run_id_across_sessions(tmp_path: Path) -> None:
+    root = tmp_path / "history"
+    identifiers = iter((uuid.UUID(_RUN_D), uuid.UUID(_RUN_A)))
+    times = iter(
+        (
+            _START,
+            _START + timedelta(seconds=10),
+            _START + timedelta(seconds=1),
+            _START + timedelta(seconds=11),
+        )
+    )
+    store = open_writer(
+        root=root,
+        run_id_factory=lambda: next(identifiers),
+        clock=lambda: next(times),
+        platform="linux",
+    )
+    try:
+        for session, run_id in (("first-session", _RUN_D), ("second-session", _RUN_A)):
+            store.create_run(
+                session_id=session,
+                config_fingerprint=_FINGERPRINT,
+                package_version="0.2.0a1",
+            )
+            store.finalize_run(
+                run_id,
+                result=RunResult.COMPLETED,
+                stop_reason=StopReason.CLI_STOP,
+                event_high_water_mark=None,
+            )
+    finally:
+        store.close()
+
+    assert prune_runs(root=root, keep=1) == 1
+    assert tuple(record.run_id for record in list_runs(root=root)) == (_RUN_A,)
+
+
+def test_prune_missing_and_empty_store_are_mutation_free(tmp_path: Path) -> None:
+    missing = tmp_path / "missing"
+    assert prune_runs(root=missing, keep=0) == 0
+    assert not missing.exists()
+
+    empty = tmp_path / "empty"
+    empty.mkdir(mode=0o700)
+    before = (empty.stat().st_ino, empty.stat().st_mode, empty.stat().st_mtime_ns)
+    assert prune_runs(root=empty, keep=0) == 0
+    after = (empty.stat().st_ino, empty.stat().st_mode, empty.stat().st_mtime_ns)
+    assert before == after
+    assert tuple(empty.iterdir()) == ()
+
+
+def test_prune_mid_delete_failure_rolls_back_and_connection_recovers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "history"
+    _seed_prune_store(root, (_RUN_A, _RUN_B, _RUN_C), finalized_count=3)
+    store = history._open_existing_writer(root=root)  # pyright: ignore[reportPrivateUsage]
+    assert store is not None
+    original_delete = history._delete_run_for_prune  # pyright: ignore[reportPrivateUsage]
+    calls = 0
+
+    def fail_second(connection: sqlite3.Connection, run_id: str) -> sqlite3.Cursor:
+        nonlocal calls
+        calls += 1
+        cursor = original_delete(connection, run_id)
+        if calls == 2:
+            raise RuntimeError("private delete failure")
+        return cursor
+
+    monkeypatch.setattr(history, "_delete_run_for_prune", fail_second)
+    try:
+        with pytest.raises(HistoryStoreError) as caught:
+            store.prune_finalized_runs(keep=0)
+        assert str(caught.value) == ""
+        assert not store._connection.in_transaction  # pyright: ignore[reportPrivateUsage]
+        assert len(store.list_runs()) == 3
+        assert sum(len(store.list_events(run_id)) for run_id in (_RUN_A, _RUN_B, _RUN_C)) == 3
+
+        monkeypatch.setattr(history, "_delete_run_for_prune", original_delete)
+        assert store.prune_finalized_runs(keep=0) == 3
+        assert store.list_runs() == ()
+    finally:
+        store.close()
+
+
+def test_prune_commit_failure_rolls_back_and_connection_recovers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "history"
+    _seed_prune_store(root, (_RUN_A, _RUN_B), finalized_count=2)
+    store = history._open_existing_writer(root=root)  # pyright: ignore[reportPrivateUsage]
+    assert store is not None
+    original_commit = history._commit_prune  # pyright: ignore[reportPrivateUsage]
+
+    def fail_commit(_connection: sqlite3.Connection) -> None:
+        raise sqlite3.OperationalError("private commit failure")
+
+    monkeypatch.setattr(history, "_commit_prune", fail_commit)
+    try:
+        with pytest.raises(HistoryStoreError) as caught:
+            store.prune_finalized_runs(keep=0)
+        assert str(caught.value) == ""
+        assert not store._connection.in_transaction  # pyright: ignore[reportPrivateUsage]
+        assert len(store.list_runs()) == 2
+
+        monkeypatch.setattr(history, "_commit_prune", original_commit)
+        assert store.prune_finalized_runs(keep=1) == 1
+        assert tuple(record.run_id for record in store.list_runs()) == (_RUN_B,)
+    finally:
+        store.close()
+
+
+def test_prune_base_exception_is_preserved_and_rolled_back(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "history"
+    _seed_prune_store(root, (_RUN_A, _RUN_B), finalized_count=2)
+    store = history._open_existing_writer(root=root)  # pyright: ignore[reportPrivateUsage]
+    assert store is not None
+    abort = _ClockAbort("private prune abort")
+
+    def abort_delete(_connection: sqlite3.Connection, _run_id: str) -> sqlite3.Cursor:
+        raise abort
+
+    monkeypatch.setattr(history, "_delete_run_for_prune", abort_delete)
+    try:
+        with pytest.raises(_ClockAbort) as caught:
+            store.prune_finalized_runs(keep=0)
+        assert caught.value is abort
+        assert not store._connection.in_transaction  # pyright: ignore[reportPrivateUsage]
+        assert len(store.list_runs()) == 2
+    finally:
+        store.close()
+
+
+def test_prune_busy_writer_is_bounded_and_leaves_no_partial_deletion(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "history"
+    _seed_prune_store(root, (_RUN_A, _RUN_B), finalized_count=2)
+    blocker = open_writer(root=root)
+    blocker._connection.execute("BEGIN IMMEDIATE")  # pyright: ignore[reportPrivateUsage]
+    started = time.monotonic()
+    try:
+        with pytest.raises(HistoryStoreError) as caught:
+            prune_runs(root=root, keep=0)
+        assert str(caught.value) == ""
+        assert time.monotonic() - started < 2.0
+        assert len(blocker.list_runs()) == 2
+    finally:
+        blocker._connection.rollback()  # pyright: ignore[reportPrivateUsage]
+        blocker.close()
+    assert prune_runs(root=root, keep=1) == 1
+
+
+def test_prune_active_incomplete_run_and_reader_snapshot_are_consistent(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "history"
+    _seed_prune_store(root, (_RUN_A, _RUN_B), finalized_count=2)
+    owner = open_writer(
+        root=root,
+        run_id_factory=lambda: uuid.UUID(_RUN_C),
+        clock=lambda: _START,
+        platform="linux",
+    )
+    reader = open_read_only(root=root)
+    assert reader is not None
+    try:
+        owner.create_run(
+            session_id="active",
+            config_fingerprint=_FINGERPRINT,
+            package_version="0.2.0a1",
+        )
+        owner.persist_events(_RUN_C, _event_snapshot()[:1])
+        reader._connection.execute("BEGIN")  # pyright: ignore[reportPrivateUsage]
+        before = reader.list_runs()
+        assert len(before) == 3
+
+        assert prune_runs(root=root, keep=1) == 1
+        assert len(reader.list_runs()) == 3
+        reader._connection.commit()  # pyright: ignore[reportPrivateUsage]
+        assert {record.run_id for record in reader.list_runs()} == {_RUN_B, _RUN_C}
+
+        active = get_run(_RUN_C, root=root)
+        assert active.result is None
+        assert tuple(event.sequence for event in list_events(_RUN_C, root=root)) == (
+            0,
+        )
+        owner.finalize_run(
+            _RUN_C,
+            result=RunResult.COMPLETED,
+            stop_reason=StopReason.CLI_STOP,
+            event_high_water_mark=0,
+        )
+        assert get_run(_RUN_C, root=root).result is RunResult.COMPLETED
+    finally:
+        reader.close()
+        owner.close()
+
+
+def test_prune_executes_no_vacuum_or_checkpoint(tmp_path: Path) -> None:
+    root = tmp_path / "history"
+    _seed_prune_store(root, (_RUN_A, _RUN_B), finalized_count=2)
+    store = history._open_existing_writer(root=root)  # pyright: ignore[reportPrivateUsage]
+    assert store is not None
+    statements: list[str] = []
+    store._connection.set_trace_callback(statements.append)  # pyright: ignore[reportPrivateUsage]
+    try:
+        assert store.prune_finalized_runs(keep=1) == 1
+    finally:
+        store.close()
+    normalized = "\n".join(statements).upper()
+    assert "VACUUM" not in normalized
+    assert "CHECKPOINT" not in normalized
+
+
 def test_list_ordering_and_limit_are_deterministic(tmp_path: Path) -> None:
     identifiers = iter((uuid.UUID(_RUN_A), uuid.UUID(_RUN_B)))
     times = iter((_START, _START))
@@ -1464,13 +1775,332 @@ def test_read_only_queries_do_not_mutate_database(tmp_path: Path) -> None:
     assert _snapshot(root) == before
 
 
-def _snapshot(directory: Path) -> dict[str, tuple[int, int, int, int]]:
-    return {
-        entry.name: (
-            entry.lstat().st_ino,
-            entry.lstat().st_mode,
-            entry.lstat().st_size,
-            entry.lstat().st_mtime_ns,
+@pytest.mark.parametrize(
+    ("column", "value"),
+    (
+        ("schema_version", 2),
+        ("run_id", "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"),
+        ("session_id", "../private"),
+        ("config_fingerprint", "A" * 64),
+        ("package_version", "private version"),
+        ("platform", "windows"),
+        ("started_at", "not-a-timestamp"),
+        ("ended_at", None),
+        ("result", RunResult.RUNTIME_FAILED.value),
+        ("stop_reason", StopReason.RUNTIME_FAILURE.value),
+        ("event_high_water_mark", 9),
+    ),
+)
+def test_prune_rejects_each_invalid_run_column_without_mutation(
+    tmp_path: Path,
+    column: str,
+    value: object,
+) -> None:
+    root = tmp_path / column
+    _seed_prune_store(root, (_RUN_A,), finalized_count=1)
+    connection = sqlite3.connect(root / "history.sqlite3")
+    try:
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            f"UPDATE runs SET {column} = ?",  # noqa: S608
+            (value,),
         )
-        for entry in directory.iterdir()
-    }
+        connection.commit()
+    finally:
+        connection.close()
+    before = _snapshot(root)
+
+    with pytest.raises(HistoryStoreError) as caught:
+        prune_runs(root=root, keep=0)
+
+    assert str(caught.value) == ""
+    assert _snapshot(root) == before
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    (
+        ("schema_version", 2),
+        ("run_id", _RUN_B),
+        ("sequence", 2),
+        ("resource_identity", "unsafe\nidentity"),
+        ("event_type", "unknown"),
+        ("outcome", "unknown"),
+        ("severity", "debug"),
+        ("summary", "private\nsummary"),
+        ("lifecycle_state", "unknown"),
+        ("health_status", "unknown"),
+        ("recorded_at", "not-a-timestamp"),
+    ),
+)
+def test_prune_rejects_each_invalid_event_column_without_mutation(
+    tmp_path: Path,
+    column: str,
+    value: object,
+) -> None:
+    root = tmp_path / column
+    _seed_prune_store(root, (_RUN_A,), finalized_count=1)
+    connection = sqlite3.connect(root / "history.sqlite3")
+    try:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            f"UPDATE events SET {column} = ?",  # noqa: S608
+            (value,),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    before = _snapshot(root)
+
+    with pytest.raises(HistoryStoreError) as caught:
+        prune_runs(root=root, keep=0)
+
+    assert str(caught.value) == ""
+    assert _snapshot(root) == before
+
+
+@pytest.mark.parametrize(
+    "kind",
+    (
+        "corrupt",
+        "user-version",
+        "extra-table",
+        "extra-view",
+        "extra-trigger",
+        "extra-index",
+    ),
+)
+def test_prune_rejects_corrupt_or_mismatched_schema_without_mutation(
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    root = tmp_path / kind
+    if kind == "corrupt":
+        root.mkdir(mode=0o700)
+        database = root / "history.sqlite3"
+        database.write_bytes(b"not sqlite")
+        os.chmod(database, 0o600)
+    else:
+        _seed_prune_store(root, (_RUN_A,), finalized_count=1)
+        connection = sqlite3.connect(root / "history.sqlite3")
+        if kind == "user-version":
+            connection.execute("PRAGMA user_version = 2")
+        else:
+            statements = {
+                "extra-table": "CREATE TABLE unexpected(value TEXT)",
+                "extra-view": "CREATE VIEW unexpected AS SELECT run_id FROM runs",
+                "extra-trigger": (
+                    "CREATE TRIGGER unexpected AFTER INSERT ON runs "
+                    "BEGIN SELECT 1; END"
+                ),
+                "extra-index": "CREATE INDEX unexpected ON runs(session_id)",
+            }
+            connection.execute(statements[kind])
+        connection.commit()
+        connection.close()
+    before = _snapshot(root)
+
+    with pytest.raises(HistoryStoreError) as caught:
+        prune_runs(root=root, keep=0)
+
+    assert str(caught.value) == ""
+    assert _snapshot(root) == before
+    assert not (root / "history.sqlite3-wal").exists()
+    assert not (root / "history.sqlite3-shm").exists()
+
+
+@pytest.mark.parametrize(
+    ("artifact", "variant"),
+    tuple(
+        (artifact, variant)
+        for artifact in (
+            "history.lock",
+            "history.sqlite3",
+            "history.sqlite3-wal",
+            "history.sqlite3-shm",
+        )
+        for variant in ("symlink", "wrong-type", "unsafe-mode")
+    ),
+)
+def test_prune_rejects_unsafe_artifacts_without_mutation(
+    tmp_path: Path,
+    artifact: str,
+    variant: str,
+) -> None:
+    root = tmp_path / f"{artifact}-{variant}"
+    _seed_prune_store(root, (_RUN_A,), finalized_count=1)
+    path = root / artifact
+    if path.exists() or path.is_symlink():
+        path.unlink()
+    if variant == "symlink":
+        target = tmp_path / f"target-{artifact}-{variant}"
+        target.write_bytes(b"private")
+        os.chmod(target, 0o600)
+        path.symlink_to(target)
+    elif variant == "wrong-type":
+        path.mkdir(mode=0o700)
+    else:
+        path.write_bytes(b"private")
+        os.chmod(path, 0o644)
+    before = _snapshot(root)
+
+    with pytest.raises(UnsafeHistoryPathError):
+        prune_runs(root=root, keep=0)
+
+    assert _snapshot(root) == before
+
+
+def test_prune_rejects_unsafe_root_and_foreign_ownership(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir(mode=0o700)
+    symlink = tmp_path / "symlink"
+    symlink.symlink_to(target, target_is_directory=True)
+    with pytest.raises(UnsafeHistoryPathError):
+        prune_runs(root=symlink, keep=0)
+    assert tuple(target.iterdir()) == ()
+
+    wrong_type = tmp_path / "file"
+    wrong_type.write_bytes(b"private")
+    os.chmod(wrong_type, 0o600)
+    with pytest.raises(UnsafeHistoryPathError):
+        prune_runs(root=wrong_type, keep=0)
+
+    unsafe_mode = tmp_path / "unsafe-mode"
+    unsafe_mode.mkdir(mode=0o755)
+    with pytest.raises(UnsafeHistoryPathError):
+        prune_runs(root=unsafe_mode, keep=0)
+
+    foreign = tmp_path / "foreign"
+    foreign.mkdir(mode=0o700)
+    owner = foreign.stat().st_uid
+    monkeypatch.setattr(history.os, "geteuid", lambda: owner + 1)
+    with pytest.raises(UnsafeHistoryPathError):
+        prune_runs(root=foreign, keep=0)
+    assert tuple(foreign.iterdir()) == ()
+
+
+@pytest.mark.parametrize(
+    "artifact",
+    (
+        "history.lock",
+        "history.sqlite3",
+        "history.sqlite3-wal",
+        "history.sqlite3-shm",
+    ),
+)
+def test_prune_rejects_foreign_owned_artifact_without_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    artifact: str,
+) -> None:
+    root = tmp_path / artifact
+    _seed_prune_store(root, (_RUN_A,), finalized_count=1)
+    path = root / artifact
+    if not path.exists():
+        path.write_bytes(b"")
+        os.chmod(path, 0o600)
+    original_lstat = Path.lstat
+    owner = path.lstat().st_uid
+
+    class ForeignStat:
+        def __init__(self, metadata: os.stat_result) -> None:
+            self._metadata = metadata
+            self.st_uid = owner + 1
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self._metadata, name)
+
+    def foreign_lstat(candidate: Path) -> os.stat_result:
+        metadata = original_lstat(candidate)
+        if candidate == path:
+            return cast(os.stat_result, ForeignStat(metadata))
+        return metadata
+
+    before = _snapshot(root)
+    monkeypatch.setattr(Path, "lstat", foreign_lstat)
+    with pytest.raises(UnsafeHistoryPathError):
+        prune_runs(root=root, keep=0)
+    assert _snapshot(root) == before
+
+
+@pytest.mark.parametrize(
+    "artifact",
+    (".history.sqlite3.init", "history.sqlite3-wal", "history.sqlite3-shm"),
+)
+def test_prune_partial_or_init_artifact_is_fail_closed(
+    tmp_path: Path,
+    artifact: str,
+) -> None:
+    root = tmp_path / artifact
+    root.mkdir(mode=0o700)
+    path = root / artifact
+    path.write_bytes(b"private")
+    os.chmod(path, 0o600)
+    before = _snapshot(root)
+    with pytest.raises(HistoryStoreError):
+        prune_runs(root=root, keep=0)
+    assert _snapshot(root) == before
+
+
+def test_prune_unknown_and_init_entries_preserve_valid_store(
+    tmp_path: Path,
+) -> None:
+    for name, expected_error in (
+        ("unknown", UnsafeHistoryPathError),
+        (".history.sqlite3.init", HistoryStoreError),
+    ):
+        root = tmp_path / name
+        _seed_prune_store(root, (_RUN_A,), finalized_count=1)
+        extra = root / name
+        extra.write_bytes(b"private")
+        os.chmod(extra, 0o600)
+        before = _snapshot(root)
+        with pytest.raises(expected_error):
+            prune_runs(root=root, keep=0)
+        assert _snapshot(root) == before
+
+
+def test_prune_existing_lock_without_database_is_missing_store_zero_mutation(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "history"
+    root.mkdir(mode=0o700)
+    lock = root / "history.lock"
+    lock.write_bytes(b"")
+    os.chmod(lock, 0o600)
+    before = _snapshot(root)
+    assert prune_runs(root=root, keep=0) == 0
+    assert _snapshot(root) == before
+
+
+def test_prune_existing_database_does_not_create_missing_lock(tmp_path: Path) -> None:
+    root = tmp_path / "history"
+    _seed_prune_store(root, (_RUN_A, _RUN_B), finalized_count=2)
+    (root / "history.lock").unlink()
+    assert not (root / "history.lock").exists()
+
+    assert prune_runs(root=root, keep=1) == 1
+
+    assert not (root / "history.lock").exists()
+    assert tuple(record.run_id for record in list_runs(root=root)) == (_RUN_B,)
+
+
+def _snapshot(
+    directory: Path,
+) -> dict[str, tuple[int, int, int, int, bytes | None]]:
+    snapshot: dict[str, tuple[int, int, int, int, bytes | None]] = {}
+    for entry in directory.iterdir():
+        metadata = entry.lstat()
+        payload = entry.read_bytes() if stat.S_ISREG(metadata.st_mode) else None
+        snapshot[entry.name] = (
+            metadata.st_ino,
+            metadata.st_mode,
+            metadata.st_size,
+            metadata.st_mtime_ns,
+            payload,
+        )
+    return snapshot

@@ -52,15 +52,18 @@ from hiyelx.runtime.history import (
     InvalidEventCursorError,
     InvalidEventLimitError,
     InvalidHistoryLimitError,
+    InvalidRetentionKeepError,
     InvalidRunIdError,
     RunNotFoundError,
     RunRecord,
     get_run,
     list_events,
     list_runs,
+    prune_runs,
     validate_event_cursor,
     validate_event_limit,
     validate_limit,
+    validate_retention_keep,
 )
 from hiyelx.sdk import MotorDriverScaffoldError, create_motor_driver_scaffold
 from hiyelx.simulation import SimulatedMotor, register_simulated_motor
@@ -120,6 +123,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return _runtime_runs_list(limit=arguments.limit, as_json=arguments.json)
             if arguments.runs == "show":
                 return _runtime_runs_show(arguments.run_id, as_json=arguments.json)
+            if arguments.runs == "prune":
+                return _runtime_runs_prune(keep=arguments.keep)
 
     parser.error("a command is required")
 
@@ -210,6 +215,11 @@ def _parser() -> argparse.ArgumentParser:
     runs_show = runs_commands.add_parser("show", help="show one runtime run")
     runs_show.add_argument("run_id")
     runs_show.add_argument("--json", action="store_true")
+    runs_prune = runs_commands.add_parser(
+        "prune",
+        help="delete older finalized runtime runs",
+    )
+    runs_prune.add_argument("--keep", required=True, type=_retention_keep)
     return parser
 
 
@@ -394,6 +404,18 @@ def _runtime_runs_show(run_id: str, *, as_json: bool) -> int:
     return RuntimeCliExitCode.SUCCESS
 
 
+def _runtime_runs_prune(*, keep: int) -> int:
+    try:
+        deleted = prune_runs(keep=keep)
+    except HistoryError:
+        return _runtime_failure(
+            RuntimeCliExitCode.HISTORY_STORE_FAILURE,
+            "runtime history failed",
+        )
+    print(f"deleted-runs={deleted}")
+    return RuntimeCliExitCode.SUCCESS
+
+
 def _runtime_events(
     run_id: str,
     *,
@@ -522,6 +544,15 @@ def _event_limit(value: str) -> int:
         return validate_event_limit(int(value))
     except (ValueError, InvalidEventLimitError) as error:
         raise argparse.ArgumentTypeError("limit must be between 1 and 1000") from error
+
+
+def _retention_keep(value: str) -> int:
+    try:
+        return validate_retention_keep(int(value))
+    except (ValueError, InvalidRetentionKeepError) as error:
+        raise argparse.ArgumentTypeError(
+            "keep must be between 0 and 9223372036854775807"
+        ) from error
 
 
 def _print_runtime_ready(session: str) -> None:

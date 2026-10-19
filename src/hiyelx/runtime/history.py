@@ -39,6 +39,7 @@ _WRITE_TIMEOUT_MILLISECONDS = 1000
 _INITIALIZATION_LOCK_TIMEOUT_SECONDS = 1.0
 _LOCK_POLL_INTERVAL_SECONDS = 0.01
 _SQLITE_MAX_INTEGER = (1 << 63) - 1
+MAX_RETENTION_KEEP = _SQLITE_MAX_INTEGER
 
 _LOCK_NAME = "history.lock"
 _DATABASE_NAME = "history.sqlite3"
@@ -89,6 +90,10 @@ class InvalidEventCursorError(HistoryError, ValueError):
 
 class InvalidEventLimitError(HistoryError, ValueError):
     """Raised when an event query limit is outside the bounded range."""
+
+
+class InvalidRetentionKeepError(HistoryError, ValueError):
+    """Raised when a retention keep count is outside SQLite's integer range."""
 
 
 class RunResult(StrEnum):
@@ -523,6 +528,42 @@ class HistoryStore:
             _rollback_and_raise(self._connection, error)
         return records
 
+    def prune_finalized_runs(self, *, keep: int) -> int:
+        """Delete older finalized runs after validating the complete store."""
+        if not self._writable or self._closed:
+            raise HistoryStoreError
+        validated_keep = validate_retention_keep(keep)
+        deleted = 0
+        try:
+            self._connection.execute("BEGIN IMMEDIATE")
+            _validate_schema(self._connection)
+            runs = _validate_logical_content(self._connection)
+            finalized = sorted(
+                (record for record in runs if record.ended_at is not None),
+                key=lambda record: (record.started_at, record.run_id),
+                reverse=True,
+            )
+            candidates = sorted(
+                finalized[validated_keep:],
+                key=lambda record: (record.started_at, record.run_id),
+            )
+            for record in candidates:
+                cursor = _delete_run_for_prune(self._connection, record.run_id)
+                if cursor.rowcount != 1:
+                    raise HistoryStoreError
+                remaining_events = self._connection.execute(
+                    "SELECT count(*) FROM events WHERE run_id = ?",
+                    (record.run_id,),
+                ).fetchone()
+                if remaining_events != (0,):
+                    raise HistoryStoreError
+                deleted += 1
+            _validate_logical_content(self._connection)
+            _commit_prune(self._connection)
+        except BaseException as error:
+            _rollback_and_raise(self._connection, error)
+        return deleted
+
     def list_runs(self, *, limit: int = DEFAULT_LIMIT) -> tuple[RunRecord, ...]:
         validated_limit = validate_limit(limit)
         try:
@@ -707,6 +748,41 @@ def open_read_only(*, root: Path | None = None) -> HistoryStore | None:
         raise
 
 
+def _open_existing_writer(*, root: Path | None = None) -> HistoryStore | None:
+    """Open only an existing, fully validated store without creating artifacts."""
+    history_root = resolve_history_root() if root is None else _absolute_root(root)
+    if not _lexists(history_root):
+        return None
+    _preflight(history_root)
+    _validate_artifact_set(history_root)
+    database = history_root / _DATABASE_NAME
+    if not _lexists(database):
+        if any(
+            _lexists(history_root / name)
+            for name in (_INITIAL_DATABASE_NAME, _WAL_NAME, _SHM_NAME)
+        ):
+            raise HistoryStoreError
+        return None
+    identity = _database_identity(database)
+    _validate_existing_logical_database(history_root, database)
+    _preflight(history_root)
+    if _database_identity(database) != identity:
+        raise HistoryStoreError
+    connection = _connect_writer(database, existing_only=True)
+    try:
+        _validate_schema(connection)
+        _preflight(history_root)
+        return HistoryStore(connection, writable=True)
+    except BaseException as error:
+        with suppress(sqlite3.Error):
+            connection.close()
+        if isinstance(error, HistoryError):
+            raise
+        if isinstance(error, Exception):
+            raise HistoryStoreError from error
+        raise
+
+
 def list_runs(*, root: Path | None = None, limit: int = DEFAULT_LIMIT) -> tuple[RunRecord, ...]:
     validate_limit(limit)
     store = open_read_only(root=root)
@@ -748,6 +824,18 @@ def list_events(
         store.close()
 
 
+def prune_runs(*, keep: int, root: Path | None = None) -> int:
+    """Explicitly retain the newest finalized runs in an existing store."""
+    validated_keep = validate_retention_keep(keep)
+    store = _open_existing_writer(root=root)
+    if store is None:
+        return 0
+    try:
+        return store.prune_finalized_runs(keep=validated_keep)
+    finally:
+        store.close()
+
+
 def validate_limit(limit: int) -> int:
     if type(limit) is not int or not 1 <= limit <= MAX_LIMIT:
         raise InvalidHistoryLimitError
@@ -776,6 +864,12 @@ def validate_event_limit(limit: int) -> int:
     if type(limit) is not int or not 1 <= limit <= MAX_EVENT_LIMIT:
         raise InvalidEventLimitError
     return limit
+
+
+def validate_retention_keep(keep: int) -> int:
+    if type(keep) is not int or not 0 <= keep <= MAX_RETENTION_KEEP:
+        raise InvalidRetentionKeepError
+    return keep
 
 
 def _rollback_and_raise(
@@ -826,11 +920,19 @@ def _create_database(path: Path) -> None:
         connection.close()
 
 
-def _connect_writer(path: Path) -> sqlite3.Connection:
+def _connect_writer(
+    path: Path,
+    *,
+    existing_only: bool = False,
+) -> sqlite3.Connection:
+    target: Path | str = path
+    if existing_only:
+        target = f"file:{quote(str(path), safe='/')}?mode=rw"
     connection = sqlite3.connect(
-        path,
+        target,
         timeout=_WRITE_TIMEOUT_SECONDS,
         isolation_level=None,
+        uri=existing_only,
     )
     try:
         connection.execute(f"PRAGMA busy_timeout = {_WRITE_TIMEOUT_MILLISECONDS}")
@@ -885,6 +987,21 @@ def _validate_existing_database(root: Path, database: Path) -> tuple[int, ...]:
     finally:
         connection.close()
     return identity
+
+
+def _validate_existing_logical_database(root: Path, database: Path) -> None:
+    connection = _connect_read_only(root, database)
+    try:
+        try:
+            connection.execute("BEGIN")
+            _validate_schema(connection)
+            _validate_logical_content(connection)
+            connection.commit()
+        except BaseException as error:
+            _rollback_and_raise(connection, error)
+    finally:
+        with suppress(sqlite3.Error):
+            connection.close()
 
 
 def _validate_schema(connection: sqlite3.Connection) -> None:
@@ -1081,6 +1198,66 @@ def _validate_descriptor(descriptor: int, mode: int) -> None:
         or stat.S_IMODE(metadata.st_mode) != mode
     ):
         raise UnsafeHistoryPathError
+
+
+def _validate_logical_content(
+    connection: sqlite3.Connection,
+) -> tuple[RunRecord, ...]:
+    try:
+        foreign_key_failures = connection.execute(
+            "PRAGMA foreign_key_check"
+        ).fetchall()
+        run_rows = connection.execute(
+            """
+            SELECT schema_version, run_id, session_id, config_fingerprint,
+                   package_version, platform, started_at, ended_at, result,
+                   stop_reason, event_high_water_mark
+            FROM runs ORDER BY run_id ASC
+            """
+        ).fetchall()
+        event_rows = connection.execute(
+            """
+            SELECT schema_version, run_id, sequence, resource_identity,
+                   event_type, outcome, severity, summary, lifecycle_state,
+                   health_status, recorded_at
+            FROM events ORDER BY run_id ASC, sequence ASC
+            """
+        ).fetchall()
+    except sqlite3.Error as error:
+        raise HistoryStoreError from error
+    if foreign_key_failures:
+        raise HistoryStoreError
+    runs = tuple(_decode_run(row) for row in run_rows)
+    events = tuple(_decode_event(row) for row in event_rows)
+    by_run = {record.run_id: record for record in runs}
+    sequences: dict[str, list[int]] = {record.run_id: [] for record in runs}
+    for event in events:
+        if event.run_id not in by_run:
+            raise HistoryStoreError
+        sequences[event.run_id].append(event.sequence)
+    for run in runs:
+        actual = sequences[run.run_id]
+        expected_count = (
+            0
+            if run.event_high_water_mark is None
+            else run.event_high_water_mark + 1
+        )
+        if len(actual) != expected_count or any(
+            sequence != expected for expected, sequence in enumerate(actual)
+        ):
+            raise HistoryStoreError
+    return runs
+
+
+def _delete_run_for_prune(
+    connection: sqlite3.Connection,
+    run_id: str,
+) -> sqlite3.Cursor:
+    return connection.execute("DELETE FROM runs WHERE run_id = ?", (run_id,))
+
+
+def _commit_prune(connection: sqlite3.Connection) -> None:
+    connection.commit()
 
 
 def _decode_run(row: tuple[object, ...]) -> RunRecord:

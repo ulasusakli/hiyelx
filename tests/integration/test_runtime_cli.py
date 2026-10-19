@@ -57,6 +57,12 @@ def test_run_queries_handle_missing_store_without_creating_it(
     assert events.stderr == "error: runtime run is not found\n"
     assert not history_root.exists()
 
+    prune = _run("runs", "prune", "--keep", "0", environment=environment)
+    assert prune.returncode == RuntimeCliExitCode.SUCCESS
+    assert prune.stdout == "deleted-runs=0\n"
+    assert prune.stderr == ""
+    assert not history_root.exists()
+
 
 @pytest.mark.skipif(sys.platform not in {"darwin", "linux"}, reason="Unix sockets required")
 def test_cross_process_start_status_stop_and_duplicate_start(
@@ -154,6 +160,113 @@ def test_cross_process_start_status_stop_and_duplicate_start(
         assert missing.returncode == RuntimeCliExitCode.SESSION_NOT_RUNNING
         assert missing.stdout == ""
         assert missing.stderr == "error: runtime session is not running\n"
+
+
+@pytest.mark.skipif(sys.platform not in {"darwin", "linux"}, reason="Unix sockets required")
+def test_prune_preserves_active_owner_and_newest_finalized_run(
+    short_state_directory: Path,
+) -> None:
+    state = short_state_directory
+    environment = _environment(state)
+
+    def complete_session(session: str) -> str:
+        owner = _start_owner(environment, session=session)
+        try:
+            assert _read_lines(owner, 3) == (
+                f"session={session}",
+                "runtime=running",
+                "control=ready",
+            )
+            runs = json.loads(
+                _run("runs", "list", "--json", environment=environment).stdout
+            )["runs"]
+            run_id = cast(
+                str,
+                next(run["run_id"] for run in runs if run["session_id"] == session),
+            )
+            stopped = _run("stop", "--session", session, environment=environment)
+            assert stopped.returncode == RuntimeCliExitCode.SUCCESS
+            assert owner.wait(timeout=10) == RuntimeCliExitCode.SUCCESS
+            return run_id
+        finally:
+            _stop_test_owner(owner)
+
+    old_run = complete_session("prune-old")
+    newest_finalized = complete_session("prune-new")
+    active = _start_owner(environment, session="prune-active")
+    try:
+        assert _read_lines(active, 3) == (
+            "session=prune-active",
+            "runtime=running",
+            "control=ready",
+        )
+        runs = json.loads(
+            _run("runs", "list", "--json", environment=environment).stdout
+        )["runs"]
+        active_run = cast(
+            str,
+            next(
+                run["run_id"]
+                for run in runs
+                if run["session_id"] == "prune-active"
+            ),
+        )
+        assert next(run for run in runs if run["run_id"] == active_run)["result"] is None
+
+        pruned = _run("runs", "prune", "--keep", "1", environment=environment)
+        assert pruned.returncode == RuntimeCliExitCode.SUCCESS
+        assert pruned.stdout == "deleted-runs=1\n"
+        assert pruned.stderr == ""
+        assert active.poll() is None
+
+        for command in (
+            ("runs", "show", old_run),
+            ("events", "--run", old_run),
+        ):
+            missing = _run(*command, environment=environment)
+            assert missing.returncode == RuntimeCliExitCode.RUN_NOT_FOUND
+            assert missing.stdout == ""
+            assert missing.stderr == "error: runtime run is not found\n"
+
+        retained_events = _run(
+            "events",
+            "--run",
+            newest_finalized,
+            "--json",
+            environment=environment,
+        )
+        assert retained_events.returncode == RuntimeCliExitCode.SUCCESS
+        assert json.loads(retained_events.stdout)["event_count"] == 12
+        active_events = _run(
+            "events",
+            "--run",
+            active_run,
+            "--json",
+            environment=environment,
+        )
+        assert active_events.returncode == RuntimeCliExitCode.SUCCESS
+        assert json.loads(active_events.stdout)["event_count"] == 4
+
+        stopped = _run(
+            "stop",
+            "--session",
+            "prune-active",
+            environment=environment,
+        )
+        assert stopped.returncode == RuntimeCliExitCode.SUCCESS
+        assert active.wait(timeout=10) == RuntimeCliExitCode.SUCCESS
+        final_runs = json.loads(
+            _run("runs", "list", "--json", environment=environment).stdout
+        )["runs"]
+        assert {run["run_id"] for run in final_runs} == {
+            newest_finalized,
+            active_run,
+        }
+        assert all(run["result"] == "completed" for run in final_runs)
+        for session in ("prune-old", "prune-new", "prune-active"):
+            assert not (state / session).exists()
+    finally:
+        _stop_test_owner(active)
 
 
 @pytest.mark.skipif(sys.platform not in {"darwin", "linux"}, reason="Unix sockets required")
