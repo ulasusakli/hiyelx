@@ -16,17 +16,29 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import cast
+from typing import NoReturn, cast
 from urllib.parse import quote
+
+from hiyelx.resources import HealthStatus, LifecycleState, ResourceIdentity
+from hiyelx.runtime.events import (
+    RuntimeEvent,
+    RuntimeEventOperation,
+    RuntimeEventOutcome,
+    persisted_event_severity,
+    validate_persistable_runtime_event,
+)
 
 HISTORY_DIRECTORY_ENV = "HIYELX_RUNTIME_HISTORY_DIR"
 SCHEMA_VERSION = 1
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 100
+DEFAULT_EVENT_LIMIT = 100
+MAX_EVENT_LIMIT = 1000
 _WRITE_TIMEOUT_SECONDS = 1.0
 _WRITE_TIMEOUT_MILLISECONDS = 1000
 _INITIALIZATION_LOCK_TIMEOUT_SECONDS = 1.0
 _LOCK_POLL_INTERVAL_SECONDS = 0.01
+_SQLITE_MAX_INTEGER = (1 << 63) - 1
 
 _LOCK_NAME = "history.lock"
 _DATABASE_NAME = "history.sqlite3"
@@ -69,6 +81,14 @@ class RunNotFoundError(HistoryError):
 
 class RunAlreadyFinalizedError(HistoryError):
     """Raised when a run has already reached a terminal result."""
+
+
+class InvalidEventCursorError(HistoryError, ValueError):
+    """Raised when an event cursor is not an integer at or above -1."""
+
+
+class InvalidEventLimitError(HistoryError, ValueError):
+    """Raised when an event query limit is outside the bounded range."""
 
 
 class RunResult(StrEnum):
@@ -222,6 +242,21 @@ class RunRecord:
     event_high_water_mark: int | None
 
 
+@dataclass(frozen=True, slots=True)
+class EventRecord:
+    schema_version: int
+    run_id: str
+    sequence: int
+    resource_identity: ResourceIdentity | None
+    event_type: RuntimeEventOperation
+    outcome: RuntimeEventOutcome
+    severity: str
+    summary: str
+    lifecycle_state: LifecycleState | None
+    health_status: HealthStatus | None
+    recorded_at: str
+
+
 class HistoryStore:
     """One validated SQLite reader or short-transaction writer connection."""
 
@@ -296,10 +331,8 @@ class HistoryStore:
                 ),
             )
             self._connection.commit()
-        except sqlite3.Error as error:
-            with suppress(sqlite3.Error):
-                self._connection.rollback()
-            raise HistoryStoreError from error
+        except BaseException as error:
+            _rollback_and_raise(self._connection, error)
         return record
 
     def finalize_run(
@@ -323,13 +356,15 @@ class HistoryStore:
         try:
             self._connection.execute("BEGIN IMMEDIATE")
             existing = self._connection.execute(
-                "SELECT ended_at FROM runs WHERE run_id = ?",
+                "SELECT ended_at, event_high_water_mark FROM runs WHERE run_id = ?",
                 (validated_id,),
             ).fetchone()
             if existing is None:
                 raise RunNotFoundError
             if existing[0] is not None:
                 raise RunAlreadyFinalizedError
+            if existing[1] != event_high_water_mark:
+                raise HistoryStoreError
             ended_at = _format_timestamp(self._clock())
             cursor = self._connection.execute(
                 """
@@ -350,15 +385,143 @@ class HistoryStore:
             if cursor.rowcount != 1:
                 raise RunAlreadyFinalizedError
             self._connection.commit()
-        except HistoryError:
-            with suppress(sqlite3.Error):
-                self._connection.rollback()
-            raise
-        except sqlite3.Error as error:
-            with suppress(sqlite3.Error):
-                self._connection.rollback()
-            raise HistoryStoreError from error
+        except BaseException as error:
+            _rollback_and_raise(self._connection, error)
         return self.get_run(validated_id)
+
+    def persist_events(
+        self,
+        run_id: str,
+        events: tuple[RuntimeEvent, ...],
+    ) -> int | None:
+        """Atomically append one validated snapshot delta and its watermark."""
+        if not self._writable or self._closed:
+            raise HistoryStoreError
+        validated_id = validate_run_id(run_id)
+        _validate_event_snapshot(events)
+        try:
+            self._connection.execute("BEGIN IMMEDIATE")
+            run_row = self._connection.execute(
+                """
+                SELECT ended_at, event_high_water_mark FROM runs
+                WHERE run_id = ?
+                """,
+                (validated_id,),
+            ).fetchone()
+            if run_row is None:
+                raise RunNotFoundError
+            if run_row[0] is not None:
+                raise RunAlreadyFinalizedError
+            current_watermark = run_row[1]
+            if current_watermark is not None and (
+                type(current_watermark) is not int or current_watermark < 0
+            ):
+                raise HistoryStoreError
+            persisted_rows = self._connection.execute(
+                """
+                SELECT schema_version, run_id, sequence, resource_identity,
+                       event_type, outcome, severity, summary, lifecycle_state,
+                       health_status, recorded_at
+                FROM events WHERE run_id = ? ORDER BY sequence ASC
+                """,
+                (validated_id,),
+            ).fetchall()
+            persisted = tuple(_decode_event(row) for row in persisted_rows)
+            expected_count = 0 if current_watermark is None else current_watermark + 1
+            if len(persisted) != expected_count or len(events) < expected_count:
+                raise HistoryStoreError
+            if any(
+                not _record_matches_event(record, events[index])
+                for index, record in enumerate(persisted)
+            ):
+                raise HistoryStoreError
+            new_events = events[expected_count:]
+            for event in new_events:
+                recorded_at = _format_timestamp(self._clock())
+                self._connection.execute(
+                    """
+                    INSERT INTO events (
+                        schema_version, run_id, sequence, resource_identity,
+                        event_type, outcome, severity, summary, lifecycle_state,
+                        health_status, recorded_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        SCHEMA_VERSION,
+                        validated_id,
+                        event.sequence,
+                        None if event.identity is None else event.identity.value,
+                        event.operation.value,
+                        event.outcome.value,
+                        persisted_event_severity(event),
+                        event.summary,
+                        (
+                            None
+                            if event.lifecycle_state is None
+                            else event.lifecycle_state.value
+                        ),
+                        None if event.health_status is None else event.health_status.value,
+                        recorded_at,
+                    ),
+                )
+            new_watermark = None if not events else events[-1].sequence
+            cursor = self._connection.execute(
+                """
+                UPDATE runs SET event_high_water_mark = ?
+                WHERE run_id = ? AND ended_at IS NULL
+                  AND event_high_water_mark IS ?
+                """,
+                (new_watermark, validated_id, current_watermark),
+            )
+            if cursor.rowcount != 1:
+                raise HistoryStoreError
+            self._connection.commit()
+        except BaseException as error:
+            _rollback_and_raise(self._connection, error)
+        return new_watermark
+
+    def list_events(
+        self,
+        run_id: str,
+        *,
+        after: int = -1,
+        limit: int = DEFAULT_EVENT_LIMIT,
+    ) -> tuple[EventRecord, ...]:
+        """Return one bounded, sequence-ordered event page for a run."""
+        validated_id = validate_run_id(run_id)
+        validated_after = validate_event_cursor(after)
+        validated_limit = validate_event_limit(limit)
+        try:
+            self._connection.execute("BEGIN")
+            run = self.get_run(validated_id)
+            aggregate = self._connection.execute(
+                """
+                SELECT count(*), min(sequence), max(sequence)
+                FROM events WHERE run_id = ?
+                """,
+                (validated_id,),
+            ).fetchone()
+            rows = self._connection.execute(
+                """
+                SELECT schema_version, run_id, sequence, resource_identity,
+                       event_type, outcome, severity, summary, lifecycle_state,
+                       health_status, recorded_at
+                FROM events
+                WHERE run_id = ? AND sequence > ?
+                ORDER BY sequence ASC LIMIT ?
+                """,
+                (
+                    validated_id,
+                    min(validated_after, _SQLITE_MAX_INTEGER),
+                    validated_limit,
+                ),
+            ).fetchall()
+            _validate_event_aggregate(run.event_high_water_mark, aggregate)
+            records = tuple(_decode_event(row) for row in rows)
+            self._connection.commit()
+        except BaseException as error:
+            _rollback_and_raise(self._connection, error)
+        return records
 
     def list_runs(self, *, limit: int = DEFAULT_LIMIT) -> tuple[RunRecord, ...]:
         validated_limit = validate_limit(limit)
@@ -495,15 +658,18 @@ def open_writer(
         )
         connection = None
         return store
-    except Exception as error:
+    except BaseException as error:
         if connection is not None:
-            connection.close()
+            with suppress(sqlite3.Error):
+                connection.close()
         if created_temporary:
             with suppress(OSError):
                 os.unlink(history_root / _INITIAL_DATABASE_NAME)
         if isinstance(error, HistoryError):
             raise
-        raise HistoryStoreError from error
+        if isinstance(error, Exception):
+            raise HistoryStoreError from error
+        raise
     finally:
         if lock_fd is not None:
             with suppress(OSError):
@@ -531,8 +697,13 @@ def open_read_only(*, root: Path | None = None) -> HistoryStore | None:
     try:
         _validate_schema(connection)
         return HistoryStore(connection, writable=False)
-    except Exception:
-        connection.close()
+    except BaseException as error:
+        with suppress(sqlite3.Error):
+            connection.close()
+        if isinstance(error, HistoryError):
+            raise
+        if isinstance(error, Exception):
+            raise HistoryStoreError from error
         raise
 
 
@@ -558,6 +729,25 @@ def get_run(run_id: str, *, root: Path | None = None) -> RunRecord:
         store.close()
 
 
+def list_events(
+    run_id: str,
+    *,
+    root: Path | None = None,
+    after: int = -1,
+    limit: int = DEFAULT_EVENT_LIMIT,
+) -> tuple[EventRecord, ...]:
+    validated_id = validate_run_id(run_id)
+    validate_event_cursor(after)
+    validate_event_limit(limit)
+    store = open_read_only(root=root)
+    if store is None:
+        raise RunNotFoundError
+    try:
+        return store.list_events(validated_id, after=after, limit=limit)
+    finally:
+        store.close()
+
+
 def validate_limit(limit: int) -> int:
     if type(limit) is not int or not 1 <= limit <= MAX_LIMIT:
         raise InvalidHistoryLimitError
@@ -574,6 +764,31 @@ def validate_run_id(run_id: object) -> str:
     if parsed.version != 4 or str(parsed) != run_id:
         raise InvalidRunIdError
     return run_id
+
+
+def validate_event_cursor(after: int) -> int:
+    if type(after) is not int or after < -1:
+        raise InvalidEventCursorError
+    return after
+
+
+def validate_event_limit(limit: int) -> int:
+    if type(limit) is not int or not 1 <= limit <= MAX_EVENT_LIMIT:
+        raise InvalidEventLimitError
+    return limit
+
+
+def _rollback_and_raise(
+    connection: sqlite3.Connection,
+    error: BaseException,
+) -> NoReturn:
+    with suppress(sqlite3.Error):
+        connection.rollback()
+    if isinstance(error, HistoryError):
+        raise error
+    if isinstance(error, Exception):
+        raise HistoryStoreError from error
+    raise error
 
 
 def _create_database(path: Path) -> None:
@@ -598,9 +813,12 @@ def _create_database(path: Path) -> None:
             COMMIT;
             """
         )
-    except Exception:
+    except BaseException:
         if connection is not None:
-            connection.close()
+            with suppress(sqlite3.Error):
+                connection.rollback()
+            with suppress(sqlite3.Error):
+                connection.close()
         with suppress(OSError):
             os.unlink(path)
         raise
@@ -631,8 +849,9 @@ def _connect_writer(path: Path) -> sqlite3.Connection:
         ):
             raise HistoryStoreError
         return connection
-    except Exception:
-        connection.close()
+    except BaseException:
+        with suppress(sqlite3.Error):
+            connection.close()
         raise
 
 
@@ -647,10 +866,15 @@ def _connect_read_only(root: Path, database: Path) -> sqlite3.Connection:
         connection.execute("PRAGMA query_only = ON")
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
-    except Exception as error:
+    except BaseException as error:
         if connection is not None:
-            connection.close()
-        raise HistoryStoreError from error
+            with suppress(sqlite3.Error):
+                connection.close()
+        if isinstance(error, HistoryError):
+            raise
+        if isinstance(error, Exception):
+            raise HistoryStoreError from error
+        raise
 
 
 def _validate_existing_database(root: Path, database: Path) -> tuple[int, ...]:
@@ -909,6 +1133,128 @@ def _decode_run(row: tuple[object, ...]) -> RunRecord:
         typed_reason,
         high_water,
     )
+
+
+def _validate_event_snapshot(events: tuple[RuntimeEvent, ...]) -> None:
+    if type(events) is not tuple:
+        raise HistoryStoreError
+    try:
+        for expected_sequence, event in enumerate(events):
+            if type(event) is not RuntimeEvent or event.sequence != expected_sequence:
+                raise HistoryStoreError
+            validate_persistable_runtime_event(event)
+    except (TypeError, ValueError) as error:
+        raise HistoryStoreError from error
+
+
+def _decode_event(row: tuple[object, ...]) -> EventRecord:
+    if len(row) != 11:
+        raise HistoryStoreError
+    (
+        schema_version,
+        run_id,
+        sequence,
+        resource_identity,
+        event_type,
+        outcome,
+        severity,
+        summary,
+        lifecycle_state,
+        health_status,
+        recorded_at,
+    ) = row
+    if (
+        type(schema_version) is not int
+        or schema_version != SCHEMA_VERSION
+        or not isinstance(run_id, str)
+        or type(sequence) is not int
+        or sequence < 0
+        or (resource_identity is not None and not isinstance(resource_identity, str))
+        or not isinstance(event_type, str)
+        or not isinstance(outcome, str)
+        or not isinstance(severity, str)
+        or not isinstance(summary, str)
+        or (lifecycle_state is not None and not isinstance(lifecycle_state, str))
+        or (health_status is not None and not isinstance(health_status, str))
+        or not isinstance(recorded_at, str)
+    ):
+        raise HistoryStoreError
+    try:
+        validated_run_id = validate_run_id(run_id)
+        identity = (
+            None
+            if resource_identity is None
+            else ResourceIdentity(resource_identity)
+        )
+        operation = RuntimeEventOperation(event_type)
+        event_outcome = RuntimeEventOutcome(outcome)
+        lifecycle = (
+            None if lifecycle_state is None else LifecycleState(lifecycle_state)
+        )
+        health = None if health_status is None else HealthStatus(health_status)
+        event = RuntimeEvent(
+            sequence=sequence,
+            operation=operation,
+            outcome=event_outcome,
+            summary=summary,
+            identity=identity,
+            lifecycle_state=lifecycle,
+            health_status=health,
+        )
+        validate_persistable_runtime_event(event)
+        expected_severity = persisted_event_severity(event)
+        _validate_timestamp(recorded_at)
+    except (HistoryError, TypeError, ValueError) as error:
+        raise HistoryStoreError from error
+    if severity != expected_severity:
+        raise HistoryStoreError
+    return EventRecord(
+        schema_version=SCHEMA_VERSION,
+        run_id=validated_run_id,
+        sequence=sequence,
+        resource_identity=identity,
+        event_type=operation,
+        outcome=event_outcome,
+        severity=severity,
+        summary=summary,
+        lifecycle_state=lifecycle,
+        health_status=health,
+        recorded_at=recorded_at,
+    )
+
+
+def _record_matches_event(record: EventRecord, event: RuntimeEvent) -> bool:
+    return (
+        record.sequence == event.sequence
+        and record.resource_identity == event.identity
+        and record.event_type is event.operation
+        and record.outcome is event.outcome
+        and record.severity == persisted_event_severity(event)
+        and record.summary == event.summary
+        and record.lifecycle_state is event.lifecycle_state
+        and record.health_status is event.health_status
+    )
+
+
+def _validate_event_aggregate(
+    watermark: int | None,
+    aggregate: tuple[object, ...] | None,
+) -> None:
+    if aggregate is None or len(aggregate) != 3:
+        raise HistoryStoreError
+    count, minimum, maximum = aggregate
+    if type(count) is not int or count < 0:
+        raise HistoryStoreError
+    if watermark is None:
+        if (count, minimum, maximum) != (0, None, None):
+            raise HistoryStoreError
+        return
+    if (
+        type(watermark) is not int
+        or watermark < 0
+        or (count, minimum, maximum) != (watermark + 1, 0, watermark)
+    ):
+        raise HistoryStoreError
 
 
 def _format_timestamp(value: datetime) -> str:

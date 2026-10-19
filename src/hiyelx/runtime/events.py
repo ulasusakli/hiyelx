@@ -75,3 +75,195 @@ class LocalEventRecorder:
         if not self._events:
             return None
         return self._events[-1].sequence
+
+
+_ALLOWED_EVENT_SUMMARIES = frozenset(
+    {
+        (
+            RuntimeEventOperation.RUNTIME_START,
+            RuntimeEventOutcome.REQUESTED,
+            "runtime start requested",
+        ),
+        (
+            RuntimeEventOperation.RESOURCE_START,
+            RuntimeEventOutcome.ATTEMPTED,
+            "resource start attempted",
+        ),
+        (
+            RuntimeEventOperation.RESOURCE_START,
+            RuntimeEventOutcome.FAILED,
+            "resource start failed",
+        ),
+        (
+            RuntimeEventOperation.RUNTIME_FAILED,
+            RuntimeEventOutcome.FAILED,
+            "runtime failed during startup",
+        ),
+        (
+            RuntimeEventOperation.RESOURCE_START,
+            RuntimeEventOutcome.SUCCEEDED,
+            "resource start succeeded",
+        ),
+        (
+            RuntimeEventOperation.RUNTIME_RUNNING,
+            RuntimeEventOutcome.SUCCEEDED,
+            "runtime running",
+        ),
+        (
+            RuntimeEventOperation.RUNTIME_SHUTDOWN,
+            RuntimeEventOutcome.REQUESTED,
+            "runtime shutdown requested",
+        ),
+        (
+            RuntimeEventOperation.RESOURCE_SHUTDOWN,
+            RuntimeEventOutcome.ATTEMPTED,
+            "resource shutdown attempted",
+        ),
+        (
+            RuntimeEventOperation.RESOURCE_SHUTDOWN,
+            RuntimeEventOutcome.FAILED,
+            "resource shutdown failed",
+        ),
+        (
+            RuntimeEventOperation.RESOURCE_SHUTDOWN,
+            RuntimeEventOutcome.SUCCEEDED,
+            "resource shutdown succeeded",
+        ),
+        (
+            RuntimeEventOperation.RUNTIME_FAILED,
+            RuntimeEventOutcome.FAILED,
+            "runtime failed during shutdown",
+        ),
+        (
+            RuntimeEventOperation.RUNTIME_STOPPED,
+            RuntimeEventOutcome.SUCCEEDED,
+            "runtime stopped",
+        ),
+        (
+            RuntimeEventOperation.SAFE_STOP,
+            RuntimeEventOutcome.REQUESTED,
+            "safe-stop requested",
+        ),
+        (
+            RuntimeEventOperation.SAFE_STOP,
+            RuntimeEventOutcome.ATTEMPTED,
+            "motor safe-stop attempted",
+        ),
+        (
+            RuntimeEventOperation.HEALTH_DEGRADATION,
+            RuntimeEventOutcome.FAILED,
+            "resource health degraded after safe-stop failure",
+        ),
+        (
+            RuntimeEventOperation.SAFE_STOP,
+            RuntimeEventOutcome.FAILED,
+            "motor safe-stop failed",
+        ),
+        (
+            RuntimeEventOperation.SAFE_STOP,
+            RuntimeEventOutcome.SUCCEEDED,
+            "motor safe-stop succeeded",
+        ),
+        (
+            RuntimeEventOperation.SAFE_STOP_CLEANUP,
+            RuntimeEventOutcome.COMPLETED,
+            "safe-stop cleanup completed",
+        ),
+        (
+            RuntimeEventOperation.STARTUP_ROLLBACK,
+            RuntimeEventOutcome.ATTEMPTED,
+            "startup rollback attempted",
+        ),
+        (
+            RuntimeEventOperation.RESOURCE_SHUTDOWN,
+            RuntimeEventOutcome.ATTEMPTED,
+            "resource shutdown attempted during startup rollback",
+        ),
+        (
+            RuntimeEventOperation.RESOURCE_SHUTDOWN,
+            RuntimeEventOutcome.FAILED,
+            "resource shutdown failed during startup rollback",
+        ),
+        (
+            RuntimeEventOperation.RESOURCE_SHUTDOWN,
+            RuntimeEventOutcome.SUCCEEDED,
+            "resource shutdown succeeded during startup rollback",
+        ),
+        (
+            RuntimeEventOperation.STARTUP_ROLLBACK,
+            RuntimeEventOutcome.COMPLETED,
+            "startup rollback completed",
+        ),
+    }
+)
+
+_RESOURCE_EVENT_KEYS = frozenset(
+    {
+        (RuntimeEventOperation.RESOURCE_START, RuntimeEventOutcome.ATTEMPTED),
+        (RuntimeEventOperation.RESOURCE_START, RuntimeEventOutcome.FAILED),
+        (RuntimeEventOperation.RESOURCE_START, RuntimeEventOutcome.SUCCEEDED),
+        (RuntimeEventOperation.RESOURCE_SHUTDOWN, RuntimeEventOutcome.ATTEMPTED),
+        (RuntimeEventOperation.RESOURCE_SHUTDOWN, RuntimeEventOutcome.FAILED),
+        (RuntimeEventOperation.RESOURCE_SHUTDOWN, RuntimeEventOutcome.SUCCEEDED),
+        (RuntimeEventOperation.SAFE_STOP, RuntimeEventOutcome.ATTEMPTED),
+        (RuntimeEventOperation.SAFE_STOP, RuntimeEventOutcome.FAILED),
+        (RuntimeEventOperation.SAFE_STOP, RuntimeEventOutcome.SUCCEEDED),
+        (RuntimeEventOperation.HEALTH_DEGRADATION, RuntimeEventOutcome.FAILED),
+    }
+)
+
+
+def validate_persistable_runtime_event(event: RuntimeEvent) -> None:
+    """Reject fields outside the fixed sanitized RTO-1 event contract."""
+    if (
+        type(event.sequence) is not int
+        or event.sequence < 0
+        or type(event.operation) is not RuntimeEventOperation
+        or type(event.outcome) is not RuntimeEventOutcome
+        or (event.operation, event.outcome, event.summary)
+        not in _ALLOWED_EVENT_SUMMARIES
+    ):
+        raise ValueError
+    resource_event = (event.operation, event.outcome) in _RESOURCE_EVENT_KEYS
+    if resource_event:
+        if (
+            not isinstance(event.identity, ResourceIdentity)
+            or not _is_safe_resource_identity(event.identity)
+            or not isinstance(event.lifecycle_state, LifecycleState)
+            or not isinstance(event.health_status, HealthStatus)
+        ):
+            raise ValueError
+    elif (
+        event.identity is not None
+        or event.lifecycle_state is not None
+        or event.health_status is not None
+    ):
+        raise ValueError
+
+
+def persisted_event_severity(event: RuntimeEvent) -> str:
+    """Return the fixed persisted severity for one validated event."""
+    validate_persistable_runtime_event(event)
+    if event.operation is RuntimeEventOperation.HEALTH_DEGRADATION:
+        return "warning"
+    if event.outcome is RuntimeEventOutcome.FAILED:
+        return "error"
+    return "info"
+
+
+def _is_safe_resource_identity(identity: ResourceIdentity) -> bool:
+    value = identity.value
+    return (
+        1 <= len(value) <= 64
+        and value[0].isascii()
+        and (value[0].islower() or value[0].isdigit())
+        and all(
+            character.isascii()
+            and (
+                character.islower()
+                or character.isdigit()
+                or character in "_-"
+            )
+            for character in value
+        )
+    )

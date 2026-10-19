@@ -7,7 +7,12 @@ import pytest
 from hiyelx import cli
 from hiyelx.resources import HealthStatus, LifecycleState, ResourceIdentity
 from hiyelx.rpc import MotorGrpcServer, RpcTransportState
-from hiyelx.runtime import RuntimeManager, RuntimeManagerState
+from hiyelx.runtime import (
+    RuntimeEventOperation,
+    RuntimeEventOutcome,
+    RuntimeManager,
+    RuntimeManagerState,
+)
 from hiyelx.runtime.control import (
     ResourceStatus,
     RuntimeCliExitCode,
@@ -16,6 +21,7 @@ from hiyelx.runtime.control import (
     StopReply,
 )
 from hiyelx.runtime.history import (
+    EventRecord,
     HistoryStoreError,
     RunNotFoundError,
     RunRecord,
@@ -299,6 +305,141 @@ def test_runtime_runs_errors_are_fixed_and_sanitized(
     assert "private" not in captured.err
 
 
+def test_runtime_events_text_cursor_limit_and_canonical_json(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    records = _event_records()
+    calls: list[tuple[str, int, int]] = []
+
+    def fake_list_events(
+        run_id: str,
+        *,
+        after: int,
+        limit: int,
+    ) -> tuple[EventRecord, ...]:
+        calls.append((run_id, after, limit))
+        return records
+
+    monkeypatch.setattr(cli, "list_events", fake_list_events)
+    run_id = records[0].run_id
+    assert (
+        cli.main(["runtime", "events", "--run", run_id])
+        == RuntimeCliExitCode.SUCCESS
+    )
+    captured = capsys.readouterr()
+    assert calls == [(run_id, -1, 100)]
+    assert captured.err == ""
+    assert captured.out == (
+        f"run={run_id}\n"
+        "event-count=2\n"
+        "event=0 type=runtime_start outcome=requested severity=info "
+        "resource=none lifecycle=none health=none "
+        "recorded-at=2026-10-18T10:11:12.123456Z "
+        "summary=runtime start requested\n"
+        "event=1 type=resource_start outcome=succeeded severity=info "
+        "resource=sim_motor lifecycle=running health=healthy "
+        "recorded-at=2026-10-18T10:11:13.123456Z "
+        "summary=resource start succeeded\n"
+    )
+
+    assert (
+        cli.main(
+            [
+                "runtime",
+                "events",
+                "--run",
+                run_id,
+                "--after",
+                "0",
+                "--limit",
+                "1",
+                "--json",
+            ]
+        )
+        == RuntimeCliExitCode.SUCCESS
+    )
+    captured = capsys.readouterr()
+    assert calls[-1] == (run_id, 0, 1)
+    document = json.loads(captured.out)
+    assert document == {
+        "event_count": 2,
+        "events": [cli._event_document(record) for record in records],  # pyright: ignore[reportPrivateUsage]
+        "run_id": run_id,
+    }
+    assert captured.out == json.dumps(
+        document,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ) + "\n"
+
+
+@pytest.mark.parametrize(
+    ("option", "value", "message"),
+    (
+        ("--after", "-2", "after must be an integer at or above -1"),
+        ("--after", "true", "after must be an integer at or above -1"),
+        ("--limit", "0", "limit must be between 1 and 1000"),
+        ("--limit", "1001", "limit must be between 1 and 1000"),
+    ),
+)
+def test_runtime_events_rejects_invalid_cursor_and_limit(
+    option: str,
+    value: str,
+    message: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as caught:
+        cli.main(["runtime", "events", "--run", _run_record().run_id, option, value])
+    assert caught.value.code == RuntimeCliExitCode.INVALID_CONFIGURATION
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert message in captured.err
+
+
+def test_runtime_events_errors_are_fixed_sanitized_and_emit_no_partial_output(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def missing(
+        _run_id: str,
+        *,
+        after: int,
+        limit: int,
+    ) -> tuple[EventRecord, ...]:
+        del after, limit
+        raise RunNotFoundError("private run")
+
+    monkeypatch.setattr(cli, "list_events", missing)
+    assert (
+        cli.main(["runtime", "events", "--run", "not-a-run"])
+        == RuntimeCliExitCode.RUN_NOT_FOUND
+    )
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "error: runtime run is not found\n"
+    assert "private" not in captured.err
+
+    def corrupt(
+        _run_id: str,
+        *,
+        after: int,
+        limit: int,
+    ) -> tuple[EventRecord, ...]:
+        del after, limit
+        raise HistoryStoreError("/private/store sqlite payload")
+
+    monkeypatch.setattr(cli, "list_events", corrupt)
+    assert (
+        cli.main(["runtime", "events", "--run", _run_record().run_id])
+        == RuntimeCliExitCode.HISTORY_STORE_FAILURE
+    )
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "error: runtime history failed\n"
+    assert "private" not in captured.err
+
 def test_hardware_preflight_is_deterministic_and_does_not_expose_transport(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -350,6 +491,38 @@ def _run_record() -> RunRecord:
         result=RunResult.COMPLETED,
         stop_reason=StopReason.CLI_STOP,
         event_high_water_mark=3,
+    )
+
+
+def _event_records() -> tuple[EventRecord, ...]:
+    run_id = _run_record().run_id
+    return (
+        EventRecord(
+            schema_version=1,
+            run_id=run_id,
+            sequence=0,
+            resource_identity=None,
+            event_type=RuntimeEventOperation.RUNTIME_START,
+            outcome=RuntimeEventOutcome.REQUESTED,
+            severity="info",
+            summary="runtime start requested",
+            lifecycle_state=None,
+            health_status=None,
+            recorded_at="2026-10-18T10:11:12.123456Z",
+        ),
+        EventRecord(
+            schema_version=1,
+            run_id=run_id,
+            sequence=1,
+            resource_identity=ResourceIdentity("sim_motor"),
+            event_type=RuntimeEventOperation.RESOURCE_START,
+            outcome=RuntimeEventOutcome.SUCCEEDED,
+            severity="info",
+            summary="resource start succeeded",
+            lifecycle_state=LifecycleState.RUNNING,
+            health_status=HealthStatus.HEALTHY,
+            recorded_at="2026-10-18T10:11:13.123456Z",
+        ),
     )
 
 

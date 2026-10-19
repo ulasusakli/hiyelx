@@ -833,7 +833,27 @@ async def run_local_runtime(
     signal_installed = False
     ready_published = False
     cleanup_succeeded: bool | None = None
+    event_history_succeeded = True
+    persisted_event_high_water_mark: int | None = None
     loop = asyncio.get_running_loop()
+
+    def persist_event_delta() -> None:
+        nonlocal event_history_succeeded, persisted_event_high_water_mark
+        if (
+            not event_history_succeeded
+            or history_store is None
+            or run_record is None
+            or operations is None
+        ):
+            return
+        try:
+            snapshot = operations.snapshot()
+            persisted_event_high_water_mark = history_store.persist_events(
+                run_record.run_id,
+                snapshot.events,
+            )
+        except Exception:
+            event_history_succeeded = False
 
     try:
         try:
@@ -851,7 +871,14 @@ async def run_local_runtime(
             register_simulated_motor(registry)
             try:
                 operations = RuntimeOperations(config, registry)
-                await operations.start()
+                try:
+                    await operations.start()
+                except Exception:
+                    persist_event_delta()
+                    raise
+                persist_event_delta()
+                if not event_history_succeeded:
+                    raise RuntimeHistoryError
                 control_server = LocalControlServer(owned.layout, operations, coordinator)
                 await control_server.start()
                 try:
@@ -862,7 +889,7 @@ async def run_local_runtime(
                 owned.publish(fingerprint)
                 if ready is not None:
                     ready(validated_session)
-            except UnsupportedPlatformError:
+            except (RuntimeHistoryError, UnsupportedPlatformError):
                 raise
             except Exception as error:
                 raise RuntimeOwnerStartupError from error
@@ -870,7 +897,10 @@ async def run_local_runtime(
 
             await coordinator.requested.wait()
             control_server.stop_accepting()
-            runtime_succeeded = await _cleanup_operations(operations)
+            runtime_succeeded = await _cleanup_operations(
+                operations,
+                persist_events=persist_event_delta,
+            )
             runtime_cleaned = True
             session_succeeded = owned.cleanup()
             session_cleaned = session_succeeded
@@ -880,22 +910,30 @@ async def run_local_runtime(
                 history_store,
                 run_record,
                 result=(
-                    RunResult.COMPLETED
-                    if cleanup_succeeded and coordinator.stop_reason is StopReason.CLI_STOP
+                    RunResult.CLEANUP_FAILED
+                    if not cleanup_succeeded
+                    else RunResult.HISTORY_FAILED
+                    if not event_history_succeeded
+                    else RunResult.COMPLETED
+                    if coordinator.stop_reason is StopReason.CLI_STOP
                     else RunResult.INTERRUPTED
-                    if cleanup_succeeded and coordinator.stop_reason is StopReason.SIGINT
-                    else RunResult.CLEANUP_FAILED
+                    if coordinator.stop_reason is StopReason.SIGINT
+                    else RunResult.RUNTIME_FAILED
                 ),
                 stop_reason=(
-                    coordinator.stop_reason
-                    if cleanup_succeeded and coordinator.stop_reason is not None
-                    else StopReason.CLEANUP_FAILURE
+                    StopReason.CLEANUP_FAILURE
+                    if not cleanup_succeeded
+                    else StopReason.HISTORY_FAILURE
+                    if not event_history_succeeded
+                    else coordinator.stop_reason or StopReason.RUNTIME_FAILURE
                 ),
-                event_high_water_mark=_event_high_water_mark(operations),
+                event_high_water_mark=persisted_event_high_water_mark,
             )
-            if cleanup_succeeded and history_succeeded:
+            if cleanup_succeeded and event_history_succeeded and history_succeeded:
                 coordinator.complete(StopReply(validated_session))
-            elif cleanup_succeeded:
+            elif cleanup_succeeded and (
+                not event_history_succeeded or not history_succeeded
+            ):
                 coordinator.complete(
                     FailureReply(
                         ControlErrorCode.RUNTIME_HISTORY_FAILED,
@@ -913,7 +951,7 @@ async def run_local_runtime(
             await control_server.close()
             if not cleanup_succeeded:
                 raise RuntimeOwnerCleanupError
-            if not history_succeeded:
+            if not event_history_succeeded or not history_succeeded:
                 raise RuntimeHistoryError
         finally:
             active_error = sys.exc_info()[1]
@@ -929,7 +967,10 @@ async def run_local_runtime(
                     cleanup_interruption = error
             if operations is not None and not runtime_cleaned:
                 try:
-                    final_cleanup_succeeded = await _cleanup_operations(operations)
+                    final_cleanup_succeeded = await _cleanup_operations(
+                        operations,
+                        persist_events=persist_event_delta,
+                    )
                 except BaseException as error:
                     final_cleanup_succeeded = False
                     cleanup_interruption = error
@@ -974,15 +1015,27 @@ async def run_local_runtime(
                 and run_record is not None
                 and not finalization_attempted
             ):
-                if not ready_published:
+                if not ready_published and not isinstance(
+                    active_error,
+                    RuntimeHistoryError,
+                ):
                     result = RunResult.STARTUP_FAILED
                     reason = StopReason.STARTUP_FAILURE
                 elif not final_cleanup_succeeded:
                     result = RunResult.CLEANUP_FAILED
                     reason = StopReason.CLEANUP_FAILURE
-                elif not isinstance(active_error, RuntimeHistoryError):
+                elif active_error is not None and not isinstance(
+                    active_error,
+                    RuntimeHistoryError,
+                ):
                     result = RunResult.RUNTIME_FAILED
                     reason = StopReason.RUNTIME_FAILURE
+                elif not event_history_succeeded or isinstance(
+                    active_error,
+                    RuntimeHistoryError,
+                ):
+                    result = RunResult.HISTORY_FAILED
+                    reason = StopReason.HISTORY_FAILURE
                 else:
                     result = None
                     reason = None
@@ -993,7 +1046,7 @@ async def run_local_runtime(
                         run_record,
                         result=result,
                         stop_reason=reason,
-                        event_high_water_mark=_event_high_water_mark(operations),
+                        event_high_water_mark=persisted_event_high_water_mark,
                     )
             if cleanup_interruption is not None and active_error is None:
                 raise cleanup_interruption
@@ -1004,15 +1057,6 @@ async def run_local_runtime(
     finally:
         if history_store is not None:
             history_store.close()
-
-
-def _event_high_water_mark(operations: RuntimeOperations | None) -> int | None:
-    if operations is None:
-        return None
-    try:
-        return operations.snapshot().event_high_water_mark
-    except Exception:
-        return None
 
 
 def _finalize_run_history(
@@ -1035,18 +1079,28 @@ def _finalize_run_history(
     return True
 
 
-async def _cleanup_operations(operations: RuntimeOperations) -> bool:
+async def _cleanup_operations(
+    operations: RuntimeOperations,
+    *,
+    persist_events: Callable[[], None] | None = None,
+) -> bool:
     succeeded = True
     if operations.snapshot().manager_state is RuntimeManagerState.RUNNING:
         try:
             await operations.safe_stop()
         except Exception:
             succeeded = False
+        finally:
+            if persist_events is not None:
+                persist_events()
         if operations.snapshot().manager_state is RuntimeManagerState.RUNNING:
             try:
                 await operations.shutdown()
             except Exception:
                 succeeded = False
+            finally:
+                if persist_events is not None:
+                    persist_events()
     return succeeded
 
 

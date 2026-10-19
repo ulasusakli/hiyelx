@@ -51,6 +51,12 @@ def test_run_queries_handle_missing_store_without_creating_it(
     assert missing.stderr == "error: runtime run is not found\n"
     assert not history_root.exists()
 
+    events = _run("events", "--run", "not-a-uuid", environment=environment)
+    assert events.returncode == RuntimeCliExitCode.RUN_NOT_FOUND
+    assert events.stdout == ""
+    assert events.stderr == "error: runtime run is not found\n"
+    assert not history_root.exists()
+
 
 @pytest.mark.skipif(sys.platform not in {"darwin", "linux"}, reason="Unix sockets required")
 def test_cross_process_start_status_stop_and_duplicate_start(
@@ -89,6 +95,23 @@ def test_cross_process_start_status_stop_and_duplicate_start(
         assert running_run["session_id"] == "alpha"
         assert running_run["result"] is None
         run_id = cast(str, running_run["run_id"])
+        active_events = _run(
+            "events",
+            "--run",
+            run_id,
+            "--json",
+            environment=environment,
+        )
+        assert active_events.returncode == RuntimeCliExitCode.SUCCESS
+        active_document = json.loads(active_events.stdout)
+        assert active_document["run_id"] == run_id
+        assert active_document["event_count"] == 4
+        assert [event["sequence"] for event in active_document["events"]] == [
+            0,
+            1,
+            2,
+            3,
+        ]
 
         _assert_protocol_rejections_do_not_stop_owner(state, owner)
 
@@ -109,7 +132,20 @@ def test_cross_process_start_status_stop_and_duplicate_start(
         assert f"run={run_id}\n" in completed.stdout
         assert "result=completed\n" in completed.stdout
         assert "stop-reason=cli_stop\n" in completed.stdout
+        assert "event-high-water-mark=11\n" in completed.stdout
         assert completed.stderr == ""
+        completed_events = _run(
+            "events",
+            "--run",
+            run_id,
+            "--after",
+            "3",
+            environment=environment,
+        )
+        assert completed_events.returncode == RuntimeCliExitCode.SUCCESS
+        assert completed_events.stdout.startswith(f"run={run_id}\nevent-count=8\n")
+        assert "event=4 type=safe_stop outcome=requested" in completed_events.stdout
+        assert "event=11 type=runtime_stopped outcome=succeeded" in completed_events.stdout
     finally:
         _stop_test_owner(owner)
 
@@ -155,6 +191,15 @@ def test_two_different_sessions_share_history_and_stop_independently(
             shown = _run("runs", "show", run["run_id"], "--json", environment=environment)
             assert shown.returncode == RuntimeCliExitCode.SUCCESS
             assert json.loads(shown.stdout) == run
+            events = _run(
+                "events",
+                "--run",
+                run["run_id"],
+                "--json",
+                environment=environment,
+            )
+            assert events.returncode == RuntimeCliExitCode.SUCCESS
+            assert json.loads(events.stdout)["event_count"] == 4
 
         stopped_alpha = _run("stop", "--session", "session-alpha", environment=environment)
         assert stopped_alpha.returncode == RuntimeCliExitCode.SUCCESS
@@ -172,6 +217,26 @@ def test_two_different_sessions_share_history_and_stop_independently(
         middle_by_session = {run["session_id"]: run for run in middle}
         assert middle_by_session["session-alpha"]["result"] == "completed"
         assert middle_by_session["session-beta"]["result"] is None
+        alpha_events = json.loads(
+            _run(
+                "events",
+                "--run",
+                middle_by_session["session-alpha"]["run_id"],
+                "--json",
+                environment=environment,
+            ).stdout
+        )
+        beta_events = json.loads(
+            _run(
+                "events",
+                "--run",
+                middle_by_session["session-beta"]["run_id"],
+                "--json",
+                environment=environment,
+            ).stdout
+        )
+        assert alpha_events["event_count"] == 12
+        assert beta_events["event_count"] == 4
 
         stopped_beta = _run("stop", "--session", "session-beta", environment=environment)
         assert stopped_beta.returncode == RuntimeCliExitCode.SUCCESS
@@ -266,6 +331,72 @@ def test_foreground_sigint_uses_ordered_cleanup(short_state_directory: Path) -> 
         assert runs["run_count"] == 1
         assert runs["runs"][0]["result"] == "interrupted"
         assert runs["runs"][0]["stop_reason"] == "sigint"
+        run_id = cast(str, runs["runs"][0]["run_id"])
+        events = json.loads(
+            _run(
+                "events",
+                "--run",
+                run_id,
+                "--json",
+                environment=_environment(state),
+            ).stdout
+        )
+        assert events["event_count"] == 12
+        assert [event["sequence"] for event in events["events"]] == list(range(12))
+        assert events["events"][-1]["event_type"] == "runtime_stopped"
+    finally:
+        _stop_test_owner(owner)
+
+
+@pytest.mark.skipif(sys.platform not in {"darwin", "linux"}, reason="Unix required")
+def test_forced_owner_exit_preserves_committed_events_and_incomplete_run(
+    short_state_directory: Path,
+) -> None:
+    state = short_state_directory
+    environment = _environment(state)
+    owner = _start_owner(environment, session="crash-prefix")
+    try:
+        assert _read_lines(owner, 3) == (
+            "session=crash-prefix",
+            "runtime=running",
+            "control=ready",
+        )
+        runs = json.loads(
+            _run("runs", "list", "--json", environment=environment).stdout
+        )["runs"]
+        assert len(runs) == 1
+        run_id = cast(str, runs[0]["run_id"])
+        active_events = json.loads(
+            _run(
+                "events",
+                "--run",
+                run_id,
+                "--json",
+                environment=environment,
+            ).stdout
+        )
+        assert active_events["event_count"] == 4
+
+        owner.kill()
+        assert owner.wait(timeout=10) < 0
+
+        incomplete = json.loads(
+            _run("runs", "show", run_id, "--json", environment=environment).stdout
+        )
+        assert incomplete["ended_at"] is None
+        assert incomplete["result"] is None
+        assert incomplete["stop_reason"] is None
+        assert incomplete["event_high_water_mark"] == 3
+        committed = json.loads(
+            _run(
+                "events",
+                "--run",
+                run_id,
+                "--json",
+                environment=environment,
+            ).stdout
+        )
+        assert committed == active_events
     finally:
         _stop_test_owner(owner)
 
@@ -314,6 +445,17 @@ def test_two_connected_stop_clients_share_one_cleanup_transition(
         )
         assert runs["run_count"] == 1
         assert runs["runs"][0]["result"] == "completed"
+        events = json.loads(
+            _run(
+                "events",
+                "--run",
+                runs["runs"][0]["run_id"],
+                "--json",
+                environment=_environment(state),
+            ).stdout
+        )
+        assert events["event_count"] == 12
+        assert [event["sequence"] for event in events["events"]] == list(range(12))
     finally:
         for client in clients:
             client.close()

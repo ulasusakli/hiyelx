@@ -45,14 +45,21 @@ from hiyelx.runtime.control import (
     validate_simulation_config,
 )
 from hiyelx.runtime.history import (
+    DEFAULT_EVENT_LIMIT,
     DEFAULT_LIMIT,
+    EventRecord,
     HistoryError,
+    InvalidEventCursorError,
+    InvalidEventLimitError,
     InvalidHistoryLimitError,
     InvalidRunIdError,
     RunNotFoundError,
     RunRecord,
     get_run,
+    list_events,
     list_runs,
+    validate_event_cursor,
+    validate_event_limit,
     validate_limit,
 )
 from hiyelx.sdk import MotorDriverScaffoldError, create_motor_driver_scaffold
@@ -101,6 +108,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _runtime_status(session=arguments.session)
         if arguments.runtime == "stop":
             return _runtime_stop(session=arguments.session)
+        if arguments.runtime == "events":
+            return _runtime_events(
+                arguments.run_id,
+                after=arguments.after,
+                limit=arguments.limit,
+                as_json=arguments.json,
+            )
         if arguments.runtime == "runs":
             if arguments.runs == "list":
                 return _runtime_runs_list(limit=arguments.limit, as_json=arguments.json)
@@ -173,6 +187,18 @@ def _parser() -> argparse.ArgumentParser:
         help="request ordered safe-stop and shutdown",
     )
     runtime_stop.add_argument("--session", required=True)
+    runtime_events = runtime_commands.add_parser(
+        "events",
+        help="inspect durable events for one runtime run",
+    )
+    runtime_events.add_argument("--run", dest="run_id", required=True)
+    runtime_events.add_argument("--after", type=_event_after, default=-1)
+    runtime_events.add_argument(
+        "--limit",
+        type=_event_limit,
+        default=DEFAULT_EVENT_LIMIT,
+    )
+    runtime_events.add_argument("--json", action="store_true")
     runtime_runs = runtime_commands.add_parser(
         "runs",
         help="inspect durable local runtime runs",
@@ -368,6 +394,46 @@ def _runtime_runs_show(run_id: str, *, as_json: bool) -> int:
     return RuntimeCliExitCode.SUCCESS
 
 
+def _runtime_events(
+    run_id: str,
+    *,
+    after: int,
+    limit: int,
+    as_json: bool,
+) -> int:
+    try:
+        records = list_events(run_id, after=after, limit=limit)
+    except (InvalidRunIdError, RunNotFoundError):
+        return _runtime_failure(
+            RuntimeCliExitCode.RUN_NOT_FOUND,
+            "runtime run is not found",
+        )
+    except HistoryError:
+        return _runtime_failure(
+            RuntimeCliExitCode.HISTORY_STORE_FAILURE,
+            "runtime history failed",
+        )
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "event_count": len(records),
+                    "events": [_event_document(event) for event in records],
+                    "run_id": run_id,
+                },
+                ensure_ascii=True,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        )
+        return RuntimeCliExitCode.SUCCESS
+    print(f"run={run_id}")
+    print(f"event-count={len(records)}")
+    for record in records:
+        print(_render_event(record))
+    return RuntimeCliExitCode.SUCCESS
+
+
 def _render_run(record: RunRecord) -> tuple[str, ...]:
     return (
         f"schema-version={record.schema_version}",
@@ -401,11 +467,61 @@ def _run_document(record: RunRecord) -> dict[str, object]:
     }
 
 
+def _render_event(record: EventRecord) -> str:
+    return (
+        f"event={record.sequence} type={record.event_type.value} "
+        f"outcome={record.outcome.value} severity={record.severity} "
+        "resource="
+        f"{record.resource_identity.value if record.resource_identity is not None else 'none'} "
+        "lifecycle="
+        f"{record.lifecycle_state.value if record.lifecycle_state is not None else 'none'} "
+        "health="
+        f"{record.health_status.value if record.health_status is not None else 'none'} "
+        f"recorded-at={record.recorded_at} summary={record.summary}"
+    )
+
+
+def _event_document(record: EventRecord) -> dict[str, object]:
+    return {
+        "event_type": record.event_type.value,
+        "health_status": (
+            None if record.health_status is None else record.health_status.value
+        ),
+        "lifecycle_state": (
+            None if record.lifecycle_state is None else record.lifecycle_state.value
+        ),
+        "outcome": record.outcome.value,
+        "recorded_at": record.recorded_at,
+        "resource_identity": (
+            None if record.resource_identity is None else record.resource_identity.value
+        ),
+        "run_id": record.run_id,
+        "schema_version": record.schema_version,
+        "sequence": record.sequence,
+        "severity": record.severity,
+        "summary": record.summary,
+    }
+
+
 def _history_limit(value: str) -> int:
     try:
         return validate_limit(int(value))
     except (ValueError, InvalidHistoryLimitError) as error:
         raise argparse.ArgumentTypeError("limit must be between 1 and 100") from error
+
+
+def _event_after(value: str) -> int:
+    try:
+        return validate_event_cursor(int(value))
+    except (ValueError, InvalidEventCursorError) as error:
+        raise argparse.ArgumentTypeError("after must be an integer at or above -1") from error
+
+
+def _event_limit(value: str) -> int:
+    try:
+        return validate_event_limit(int(value))
+    except (ValueError, InvalidEventLimitError) as error:
+        raise argparse.ArgumentTypeError("limit must be between 1 and 1000") from error
 
 
 def _print_runtime_ready(session: str) -> None:

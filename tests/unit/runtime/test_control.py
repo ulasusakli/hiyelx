@@ -8,7 +8,8 @@ import sqlite3
 import stat
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
@@ -62,6 +63,7 @@ from hiyelx.runtime.history import (
     HistoryStoreError,
     RunResult,
     StopReason,
+    list_events,
     list_runs,
 )
 from hiyelx.runtime.operations import RuntimeOperations
@@ -666,6 +668,249 @@ async def test_successful_stop_finalizes_once(
     record = list_runs(root=history_root)[0]
     assert record.result is RunResult.COMPLETED
     assert record.stop_reason is StopReason.CLI_STOP
+    persisted = list_events(record.run_id, root=history_root)
+    assert tuple(event.sequence for event in persisted) == tuple(range(12))
+    assert tuple(event.event_type for event in persisted) == (
+        RuntimeEventOperation.RUNTIME_START,
+        RuntimeEventOperation.RESOURCE_START,
+        RuntimeEventOperation.RESOURCE_START,
+        RuntimeEventOperation.RUNTIME_RUNNING,
+        RuntimeEventOperation.SAFE_STOP,
+        RuntimeEventOperation.SAFE_STOP,
+        RuntimeEventOperation.SAFE_STOP,
+        RuntimeEventOperation.SAFE_STOP_CLEANUP,
+        RuntimeEventOperation.RUNTIME_SHUTDOWN,
+        RuntimeEventOperation.RESOURCE_SHUTDOWN,
+        RuntimeEventOperation.RESOURCE_SHUTDOWN,
+        RuntimeEventOperation.RUNTIME_STOPPED,
+    )
+
+
+@pytest.mark.asyncio
+async def test_startup_event_persistence_failure_blocks_readiness_and_cleans_runtime(
+    short_state_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history_root = (
+        short_state_directory.parent / f"{short_state_directory.name}-history-start-events"
+    )
+    ready: list[str] = []
+    persist_calls = 0
+
+    def fail_persist(*_args: object, **_kwargs: object) -> None:
+        nonlocal persist_calls
+        persist_calls += 1
+        raise HistoryStoreError("private sqlite detail")
+
+    monkeypatch.setattr(control.HistoryStore, "persist_events", fail_persist)
+    with pytest.raises(control.RuntimeHistoryError):
+        await run_local_runtime(
+            _simulation_config(),
+            "startup-events",
+            state_directory=short_state_directory,
+            history_directory=history_root,
+            ready=ready.append,
+        )
+
+    assert ready == []
+    assert persist_calls == 1
+    assert not (short_state_directory / "startup-events").exists()
+    record = list_runs(root=history_root)[0]
+    assert record.result is RunResult.HISTORY_FAILED
+    assert record.stop_reason is StopReason.HISTORY_FAILURE
+    assert record.event_high_water_mark is None
+    assert list_events(record.run_id, root=history_root) == ()
+
+
+@pytest.mark.asyncio
+async def test_startup_event_clock_failure_rolls_back_and_finalizes_history_failed(
+    short_state_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history_root = (
+        short_state_directory.parent / f"{short_state_directory.name}-history-clock"
+    )
+    original_open_writer = control.open_writer
+    original_cleanup = control._cleanup_operations  # pyright: ignore[reportPrivateUsage]
+    clock_calls = 0
+    cleanup_calls = 0
+    ready: list[str] = []
+
+    def fail_once_clock() -> datetime:
+        nonlocal clock_calls
+        clock_calls += 1
+        if clock_calls == 2:
+            raise RuntimeError("private clock failed")
+        return datetime(2026, 10, 18, 10, 11, 12, 123456, tzinfo=UTC)
+
+    def open_with_clock(*, root: Path | None = None) -> control.HistoryStore:
+        return original_open_writer(root=root, clock=fail_once_clock)
+
+    async def count_cleanup(
+        operations: RuntimeOperations,
+        *,
+        persist_events: Callable[[], None] | None = None,
+    ) -> bool:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        return await original_cleanup(operations, persist_events=persist_events)
+
+    monkeypatch.setattr(control, "open_writer", open_with_clock)
+    monkeypatch.setattr(control, "_cleanup_operations", count_cleanup)
+    with pytest.raises(control.RuntimeHistoryError) as caught:
+        await run_local_runtime(
+            _simulation_config(),
+            "event-clock",
+            state_directory=short_state_directory,
+            history_directory=history_root,
+            ready=ready.append,
+        )
+
+    assert str(caught.value) == ""
+    assert ready == []
+    assert cleanup_calls == 1
+    assert not (short_state_directory / "event-clock").exists()
+    record = list_runs(root=history_root)[0]
+    assert record.result is RunResult.HISTORY_FAILED
+    assert record.stop_reason is StopReason.HISTORY_FAILURE
+    assert record.ended_at is not None
+    assert record.event_high_water_mark is None
+    assert list_events(record.run_id, root=history_root) == ()
+
+
+@pytest.mark.asyncio
+async def test_termination_event_failure_preserves_committed_prefix_and_cleanup(
+    short_state_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history_root = (
+        short_state_directory.parent / f"{short_state_directory.name}-history-stop-events"
+    )
+    original_persist = control.HistoryStore.persist_events
+    persist_calls = 0
+
+    class LocalStopServer:
+        def __init__(
+            self,
+            _layout: object,
+            _operations: object,
+            coordinator: StopCoordinator,
+        ) -> None:
+            self._coordinator = coordinator
+
+        async def start(self) -> None:
+            self._coordinator.request_local_stop()
+
+        def stop_accepting(self) -> None:
+            pass
+
+        async def wait_handlers(self) -> None:
+            pass
+
+        async def close(self) -> None:
+            pass
+
+    def fail_second_persist(
+        store: control.HistoryStore,
+        *args: object,
+        **kwargs: object,
+    ) -> int | None:
+        nonlocal persist_calls
+        persist_calls += 1
+        if persist_calls == 2:
+            raise HistoryStoreError("private sqlite detail")
+        return original_persist(store, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(control, "LocalControlServer", LocalStopServer)
+    monkeypatch.setattr(control.HistoryStore, "persist_events", fail_second_persist)
+    with pytest.raises(control.RuntimeHistoryError):
+        await run_local_runtime(
+            _simulation_config(),
+            "termination-events",
+            state_directory=short_state_directory,
+            history_directory=history_root,
+        )
+
+    assert persist_calls == 2
+    assert not (short_state_directory / "termination-events").exists()
+    record = list_runs(root=history_root)[0]
+    assert record.result is RunResult.HISTORY_FAILED
+    assert record.stop_reason is StopReason.HISTORY_FAILURE
+    assert record.event_high_water_mark == 3
+    assert tuple(
+        event.sequence for event in list_events(record.run_id, root=history_root)
+    ) == (0, 1, 2, 3)
+
+
+@pytest.mark.asyncio
+async def test_cleanup_failure_precedes_secondary_event_persistence_failure(
+    short_state_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history_root = (
+        short_state_directory.parent
+        / f"{short_state_directory.name}-history-cleanup-event-failure"
+    )
+    original_persist = control.HistoryStore.persist_events
+    persist_calls = 0
+
+    class LocalStopServer:
+        def __init__(
+            self,
+            _layout: object,
+            _operations: object,
+            coordinator: StopCoordinator,
+        ) -> None:
+            self._coordinator = coordinator
+
+        async def start(self) -> None:
+            self._coordinator.request_local_stop()
+
+        def stop_accepting(self) -> None:
+            pass
+
+        async def wait_handlers(self) -> None:
+            pass
+
+        async def close(self) -> None:
+            pass
+
+    def fail_second_persist(
+        store: control.HistoryStore,
+        *args: object,
+        **kwargs: object,
+    ) -> int | None:
+        nonlocal persist_calls
+        persist_calls += 1
+        if persist_calls == 2:
+            raise HistoryStoreError("private sqlite detail")
+        return original_persist(store, *args, **kwargs)  # type: ignore[arg-type]
+
+    async def fail_cleanup(
+        _operations: RuntimeOperations,
+        *,
+        persist_events: Callable[[], None] | None = None,
+    ) -> bool:
+        if persist_events is not None:
+            persist_events()
+        return False
+
+    monkeypatch.setattr(control, "LocalControlServer", LocalStopServer)
+    monkeypatch.setattr(control.HistoryStore, "persist_events", fail_second_persist)
+    monkeypatch.setattr(control, "_cleanup_operations", fail_cleanup)
+    with pytest.raises(control.RuntimeOwnerCleanupError):
+        await run_local_runtime(
+            _simulation_config(),
+            "cleanup-event-failure",
+            state_directory=short_state_directory,
+            history_directory=history_root,
+        )
+
+    assert persist_calls == 2
+    record = list_runs(root=history_root)[0]
+    assert record.result is RunResult.CLEANUP_FAILED
+    assert record.stop_reason is StopReason.CLEANUP_FAILURE
+    assert not (short_state_directory / "cleanup-event-failure").exists()
 
 
 @pytest.mark.asyncio
@@ -768,6 +1013,84 @@ async def test_pre_ready_control_server_failure_finalizes_startup_failed(
 
 
 @pytest.mark.asyncio
+async def test_startup_failure_persists_sanitized_snapshot_prefix(
+    short_state_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history_root = (
+        short_state_directory.parent
+        / f"{short_state_directory.name}-history-startup-event-prefix"
+    )
+    identity = ResourceIdentity("sim_motor")
+    events = (
+        RuntimeEvent(
+            0,
+            RuntimeEventOperation.RUNTIME_START,
+            RuntimeEventOutcome.REQUESTED,
+            "runtime start requested",
+        ),
+        RuntimeEvent(
+            1,
+            RuntimeEventOperation.RESOURCE_START,
+            RuntimeEventOutcome.ATTEMPTED,
+            "resource start attempted",
+            identity,
+            LifecycleState.CREATED,
+            HealthStatus.UNKNOWN,
+        ),
+        RuntimeEvent(
+            2,
+            RuntimeEventOperation.RESOURCE_START,
+            RuntimeEventOutcome.FAILED,
+            "resource start failed",
+            identity,
+            LifecycleState.FAILED,
+            HealthStatus.UNHEALTHY,
+        ),
+    )
+
+    class FailingStartupOperations:
+        def __init__(self, *_args: object) -> None:
+            pass
+
+        async def start(self) -> None:
+            raise RuntimeError("private startup detail")
+
+        def snapshot(self) -> RuntimeOperationsSnapshot:
+            return cast(
+                RuntimeOperationsSnapshot,
+                type(
+                    "Snapshot",
+                    (),
+                    {
+                        "manager_state": RuntimeManagerState.FAILED,
+                        "event_high_water_mark": 2,
+                        "events": events,
+                    },
+                )(),
+            )
+
+    monkeypatch.setattr(control, "RuntimeOperations", FailingStartupOperations)
+    with pytest.raises(control.RuntimeOwnerStartupError):
+        await run_local_runtime(
+            _simulation_config(),
+            "startup-event-prefix",
+            state_directory=short_state_directory,
+            history_directory=history_root,
+        )
+
+    record = list_runs(root=history_root)[0]
+    assert record.result is RunResult.STARTUP_FAILED
+    assert record.stop_reason is StopReason.STARTUP_FAILURE
+    assert record.event_high_water_mark == 2
+    persisted = list_events(record.run_id, root=history_root)
+    assert tuple(event.sequence for event in persisted) == (0, 1, 2)
+    assert tuple(event.summary for event in persisted) == tuple(
+        event.summary for event in events
+    )
+
+
+@pytest.mark.asyncio
 async def test_signal_handler_precedes_readiness_and_restores_on_startup_failure(
     short_state_directory: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -863,7 +1186,66 @@ async def test_post_ready_owner_failure_finalizes_runtime_failed(
     record = list_runs(root=history_root)[0]
     assert record.result is RunResult.RUNTIME_FAILED
     assert record.stop_reason is StopReason.RUNTIME_FAILURE
+    assert tuple(
+        event.sequence for event in list_events(record.run_id, root=history_root)
+    ) == tuple(range(12))
     assert not (short_state_directory / "post-ready-failure").exists()
+
+
+@pytest.mark.asyncio
+async def test_post_ready_failure_precedes_secondary_event_persistence_failure(
+    short_state_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history_root = (
+        short_state_directory.parent
+        / f"{short_state_directory.name}-history-post-ready-event-failure"
+    )
+    original_persist = control.HistoryStore.persist_events
+    persist_calls = 0
+
+    class FailingWait:
+        async def wait(self) -> None:
+            raise ControlProtocolError
+
+        def set(self) -> None:
+            pass
+
+    class PostReadyCoordinator(StopCoordinator):
+        def __init__(self) -> None:
+            super().__init__()
+            self.requested = cast(asyncio.Event, FailingWait())
+
+    def fail_second_persist(
+        store: control.HistoryStore,
+        *args: object,
+        **kwargs: object,
+    ) -> int | None:
+        nonlocal persist_calls
+        persist_calls += 1
+        if persist_calls == 2:
+            raise HistoryStoreError("private sqlite detail")
+        return original_persist(store, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(control, "StopCoordinator", PostReadyCoordinator)
+    monkeypatch.setattr(control.HistoryStore, "persist_events", fail_second_persist)
+    with pytest.raises(ControlProtocolError):
+        await run_local_runtime(
+            _simulation_config(),
+            "post-event",
+            state_directory=short_state_directory,
+            history_directory=history_root,
+        )
+
+    assert persist_calls == 2
+    record = list_runs(root=history_root)[0]
+    assert record.result is RunResult.RUNTIME_FAILED
+    assert record.stop_reason is StopReason.RUNTIME_FAILURE
+    assert record.event_high_water_mark == 3
+    assert tuple(
+        event.sequence for event in list_events(record.run_id, root=history_root)
+    ) == (0, 1, 2, 3)
+    assert not (short_state_directory / "post-event").exists()
 
 
 @pytest.mark.asyncio
@@ -980,7 +1362,13 @@ async def test_cleanup_failure_finalizes_cleanup_failed(
         async def close(self) -> None:
             pass
 
-    async def failed_cleanup(_operations: RuntimeOperations) -> bool:
+    async def failed_cleanup(
+        _operations: RuntimeOperations,
+        *,
+        persist_events: Callable[[], None] | None = None,
+    ) -> bool:
+        if persist_events is not None:
+            persist_events()
         return False
 
     def count_finalize(
@@ -1174,10 +1562,14 @@ async def test_history_only_finalization_failure_does_not_skip_cleanup(
         async def close(self) -> None:
             pass
 
-    async def successful_cleanup(operations: RuntimeOperations) -> bool:
+    async def successful_cleanup(
+        operations: RuntimeOperations,
+        *,
+        persist_events: Callable[[], None] | None = None,
+    ) -> bool:
         nonlocal cleanup_calls
         cleanup_calls += 1
-        return await original_cleanup(operations)
+        return await original_cleanup(operations, persist_events=persist_events)
 
     def fail_finalize(*_args: object, **_kwargs: object) -> None:
         nonlocal finalize_calls
@@ -1201,6 +1593,103 @@ async def test_history_only_finalization_failure_does_not_skip_cleanup(
     record = list_runs(root=history_root)[0]
     assert record.result is None
     assert record.ended_at is None
+
+
+@pytest.mark.asyncio
+async def test_finalization_clock_failure_leaves_run_incomplete_after_cleanup(
+    short_state_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    history_root = (
+        short_state_directory.parent
+        / f"{short_state_directory.name}-history-finalize-clock"
+    )
+    original_open_writer = control.open_writer
+    original_cleanup = control._cleanup_operations  # pyright: ignore[reportPrivateUsage]
+    original_finalize = control.HistoryStore.finalize_run
+    clock_calls = 0
+    cleanup_calls = 0
+    finalize_calls = 0
+
+    class LocalStopServer:
+        def __init__(
+            self,
+            _layout: object,
+            _operations: object,
+            coordinator: StopCoordinator,
+        ) -> None:
+            self._coordinator = coordinator
+
+        async def start(self) -> None:
+            self._coordinator.stop_reason = StopReason.CLI_STOP
+            self._coordinator.requested.set()
+
+        def stop_accepting(self) -> None:
+            pass
+
+        async def wait_handlers(self) -> None:
+            pass
+
+        async def close(self) -> None:
+            pass
+
+    def fail_finalization_clock() -> datetime:
+        nonlocal clock_calls
+        clock_calls += 1
+        if clock_calls == 14:
+            raise RuntimeError("private finalization clock failed")
+        return datetime(2026, 10, 18, 10, 11, 12, 123456, tzinfo=UTC)
+
+    def open_with_clock(*, root: Path | None = None) -> control.HistoryStore:
+        return original_open_writer(
+            root=root,
+            clock=fail_finalization_clock,
+        )
+
+    async def count_cleanup(
+        operations: RuntimeOperations,
+        *,
+        persist_events: Callable[[], None] | None = None,
+    ) -> bool:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        return await original_cleanup(operations, persist_events=persist_events)
+
+    def count_finalize(
+        store: control.HistoryStore,
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        nonlocal finalize_calls
+        finalize_calls += 1
+        return original_finalize(store, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(control, "open_writer", open_with_clock)
+    monkeypatch.setattr(control, "LocalControlServer", LocalStopServer)
+    monkeypatch.setattr(control, "_cleanup_operations", count_cleanup)
+    monkeypatch.setattr(control.HistoryStore, "finalize_run", count_finalize)
+    with pytest.raises(control.RuntimeHistoryError) as caught:
+        await run_local_runtime(
+            _simulation_config(),
+            "final-clock",
+            state_directory=short_state_directory,
+            history_directory=history_root,
+        )
+
+    assert str(caught.value) == ""
+    assert cleanup_calls == 1
+    assert finalize_calls == 1
+    assert not (short_state_directory / "final-clock").exists()
+    record = list_runs(root=history_root)[0]
+    assert record.ended_at is None
+    assert record.result is None
+    assert record.stop_reason is None
+    assert record.event_high_water_mark == 11
+    assert tuple(
+        event.sequence for event in list_events(record.run_id, root=history_root)
+    ) == tuple(range(12))
+    reopened = control.open_writer(root=history_root)
+    reopened.close()
 
 
 @pytest.mark.asyncio
@@ -1244,10 +1733,14 @@ async def test_bounded_sqlite_contention_does_not_skip_runtime_cleanup(
         async def close(self) -> None:
             pass
 
-    async def count_cleanup(operations: RuntimeOperations) -> bool:
+    async def count_cleanup(
+        operations: RuntimeOperations,
+        *,
+        persist_events: Callable[[], None] | None = None,
+    ) -> bool:
         nonlocal cleanup_calls
         cleanup_calls += 1
-        return await original_cleanup(operations)
+        return await original_cleanup(operations, persist_events=persist_events)
 
     monkeypatch.setattr(control, "LocalControlServer", LockingStopServer)
     monkeypatch.setattr(control, "_cleanup_operations", count_cleanup)
@@ -1306,9 +1799,15 @@ async def test_cleanup_and_history_failure_attempts_finalization_once(
         async def close(self) -> None:
             pass
 
-    async def failed_cleanup(_operations: RuntimeOperations) -> bool:
+    async def failed_cleanup(
+        _operations: RuntimeOperations,
+        *,
+        persist_events: Callable[[], None] | None = None,
+    ) -> bool:
         nonlocal cleanup_calls
         cleanup_calls += 1
+        if persist_events is not None:
+            persist_events()
         return False
 
     def fail_finalize(*_args: object, **_kwargs: object) -> None:
