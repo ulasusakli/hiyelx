@@ -37,7 +37,7 @@ jobs:
         run: uv run python scripts/verify_clean_install.py
 
   macos-runtime-portability:
-    runs-on: macos-latest
+    runs-on: macos-15-intel
     timeout-minutes: 20
     steps:
       - name: Check out repository
