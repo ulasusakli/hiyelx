@@ -4,7 +4,7 @@ HIYELX is a hardware-independent robotics software platform for building, runnin
 
 ## Current stage
 
-**PRE-SEED — Runtime Operations Alpha, RTO-2**
+**PRE-SEED — Runtime Operations Alpha, RTO-3 C2 candidate**
 
 The bounded [`v0.1.0` Software Developer Preview](https://github.com/ulasusakli/hiyelx/releases/tag/v0.1.0)
 was published as a GitHub pre-release from commit
@@ -127,8 +127,9 @@ It provides immutable deterministic snapshots of one local Runtime Manager,
 ordered resource lifecycle and health state, startup ownership, and structured
 instance-local events.
 
-RTO-2 Local Runtime Process and Start/Stop CLI is active. Start the canonical
-simulation runtime in one terminal:
+RTO-2 Local Runtime Process Control and the RTO-3 local run/event ledger are
+implemented on current `main`. Start the canonical simulation runtime in one
+terminal:
 
 ```bash
 hiyelx runtime start examples/configs/sim-motor.yaml --session local-sim
@@ -138,22 +139,50 @@ Then inspect and stop it from another terminal:
 
 ```bash
 hiyelx runtime status --session local-sim
+hiyelx runtime runs list
+hiyelx runtime runs list --json
+```
+
+Copy the canonical run ID from `runs list`, then inspect the incomplete active
+run and its committed event prefix:
+
+```bash
+hiyelx runtime runs show RUN_ID
+hiyelx runtime events --run RUN_ID
+hiyelx runtime events --run RUN_ID --after 3 --limit 1000
+hiyelx runtime events --run RUN_ID --json
 hiyelx runtime stop --session local-sim
 ```
 
-The foreground owner uses a private current-user Unix socket and a strict
-versioned local protocol. It accepts built-in simulation models only; it does
-not bind TCP, discover hardware, load arbitrary modules, or use a cloud
-service. See the
-[`Runtime Operations Alpha`](docs/architecture/runtime-operations-alpha.md)
-contract for canonical status output, state-directory ownership, cleanup, and
-exit codes.
+After the foreground owner exits, the same run and event commands read the
+durable local SQLite history. Retention is explicit and never automatic:
 
-Next are RTO-3 Local Events and Run History, RTO-4 Runtime Operations Alpha
-Acceptance, and Simulation/Preview Alpha. Physical evidence does not block Runtime
-Operations, Simulation/Preview, Studio, Blocks, Code, Assisted Setup, Trigger,
-Job, Camera/Vision, Motion, or Autonomy development. Any physical validation
-claim still requires separate reviewed physical evidence.
+```bash
+hiyelx runtime runs show RUN_ID --json
+hiyelx runtime events --run RUN_ID --limit 1
+hiyelx runtime runs prune --keep 20
+```
+
+The foreground owner uses a private current-user Unix socket and a strict
+versioned local protocol. Ephemeral control state is separate from the durable
+current-user SQLite history. It accepts built-in simulation models only; it
+does not bind TCP, discover hardware, load arbitrary modules, upload telemetry,
+or require a cloud/control plane. There is no automatic retention, migration,
+repair, crash classification, or background service. See the
+[`Runtime Operations Alpha`](docs/architecture/runtime-operations-alpha.md)
+contract for storage ownership, query/prune ordering, failure precedence,
+cleanup, and exit codes.
+
+Verify the complete non-editable installed-wheel RTO-3 journey with:
+
+```bash
+uv run python scripts/verify_clean_install.py
+```
+
+RTO-3 C2 integration and Linux/macOS CI acceptance are still pending review;
+RTO-4 follows only after that evidence passes. This simulation-only software
+workflow is not Physical Hardware Proof. Physical evidence remains a separate
+track and any physical-validation claim requires separate reviewed evidence.
 
 ## Pre-seed scope
 

@@ -1,4 +1,4 @@
-# Runtime Operations Alpha: RTO-1 and RTO-2
+# Runtime Operations Alpha: RTO-1 through RTO-3
 
 ## Purpose
 
@@ -102,9 +102,9 @@ validation. Callers remain responsible for serializing explicit lifecycle
 operations.
 
 RTO-2 adds the bounded local Runtime Start/Stop CLI behavior described below.
-RTO-3 will add local event access and run history under separately defined
-retention and storage contracts. Simulation/Preview Alpha remains a subsequent
-product layer over these read-only state foundations.
+RTO-3 adds the durable local run and event history contract without changing
+the immutable RTO-1 observation model. Simulation/Preview Alpha remains a
+subsequent product layer over these foundations.
 
 ## RTO-2 local process workflow
 
@@ -226,18 +226,143 @@ Every error line is fixed and sanitized. A cleanup failure is reported only
 after all available ordered cleanup work and a later artifact-cleanup attempt
 have run.
 
-## RTO-2 limitations and next capabilities
+## RTO-3 durable run and event history
 
-RTO-2 is a foreground, single-host, current-user control session. It adds no
-daemon, service installation, detached mode, background task, polling,
-automatic retry, reconnect, persistence, durable event history, remote access,
-authentication, organization/location model, Trigger, Job, or GUI. Its only
-runtime backend is deterministic built-in simulation.
+RTO-3 persists only fixed, sanitized operational records. It does not persist
+raw configuration, credentials, environment values, device paths, tracebacks,
+backend exceptions, or arbitrary event summaries. The configuration is
+represented only by its lowercase SHA-256 fingerprint.
+
+The ephemeral RTO-2 control root and the durable history root have different
+lifetimes and are never shared:
+
+- `HIYELX_RUNTIME_STATE_DIR` selects the private session/socket root; absent an
+  override, RTO-2 uses its current-user temporary root.
+- `HIYELX_RUNTIME_HISTORY_DIR` selects an absolute durable root for tests or
+  explicit deployments.
+- Otherwise history uses
+  `$XDG_STATE_HOME/hiyelx/runtime-history`, or
+  `$HOME/.local/state/hiyelx/runtime-history` when `XDG_STATE_HOME` is absent.
+
+The history root is mode `0700`. Its lock, SQLite database, and SQLite WAL/SHM
+sidecars are mode `0600`. `lstat`, type, effective-UID ownership, permission,
+and exact entry-allowlist checks precede mutation. Symlinks, foreign ownership,
+wrong file types, unsafe permissions, initialization remnants, and unknown
+entries fail closed. No PID authorizes history access or cleanup.
+
+### SQLite schema v1
+
+`PRAGMA user_version` is exactly `1`. The schema is created atomically with
+both tables:
+
+- `runs` stores the canonical UUID4 run ID, session, configuration
+  fingerprint, package version, platform, UTC start/end timestamps, terminal
+  result/reason, and event high-water mark.
+- `events` stores one sanitized RTO-1 event per `(run_id, sequence)`, including
+  the fixed type/outcome/summary, derived severity, optional resource lifecycle
+  and health fields, and a UTC persistence timestamp.
+
+The event persistence timestamp is metadata, not ordering authority. Event
+order is solely the contiguous sequence beginning at zero. Event batches and
+the run high-water mark commit atomically in one short transaction. The foreign
+key from events to runs uses cascade deletion so explicit pruning cannot expose
+orphan events.
+
+Schema opening validates the exact tables, index, columns, constraints, and
+foreign key. Unknown schema objects, unsupported versions, corrupt rows, event
+gaps, watermark mismatches, invalid fixed summaries, or result/reason
+mismatches fail closed. There is no automatic migration or compatibility
+bypass.
+
+### Run lifecycle and failure precedence
+
+A run is created after configuration/session admission and history
+initialization but before Runtime Manager construction. Startup events are
+persisted before readiness. After readiness, lifecycle snapshot deltas are
+persisted at safe-stop and shutdown boundaries. Each write uses a short
+`BEGIN IMMEDIATE` transaction with an SQLite busy timeout of at most one
+second; there is no application-level retry or reconnect loop.
+
+Terminal results are `completed`, `startup_failed`, `runtime_failed`,
+`cleanup_failed`, `interrupted`, and the history-only `history_failed`, each
+paired with its fixed stop reason. A primary startup, runtime, or cleanup
+failure is never masked by a secondary history failure. Cleanup continues when
+event persistence fails, and finalization is attempted at most once. If the
+process is killed before finalization, the committed event prefix remains and
+the run stays incomplete; RTO-3 does not infer a crash result from a PID.
+
+### Read-only queries
+
+The following commands open SQLite through URI `mode=ro` with
+`query_only=ON` and produce output only after the complete selected result has
+been decoded:
+
+```text
+hiyelx runtime runs list [--limit N] [--json]
+hiyelx runtime runs show RUN_ID [--json]
+hiyelx runtime events --run RUN_ID [--after SEQUENCE] [--limit N] [--json]
+```
+
+Run lists order by `started_at DESC, run_id DESC`. Event pages order only by
+`sequence ASC`; `--after` is exclusive. Text field order is fixed, while JSON
+is one compact ASCII-safe line with sorted keys. Missing history is an empty
+run list. Unknown canonical run IDs return the fixed run-not-found result.
+Unsafe, corrupt, or schema-mismatched stores return a fixed history failure and
+never expose a partial row, SQLite error, path, or payload. Readers take WAL
+snapshots without acquiring the writer initialization lock or creating a
+store.
+
+### Explicit retention
+
+Retention is invoked only by:
+
+```text
+hiyelx runtime runs prune --keep N
+```
+
+All incomplete runs are retained. Among finalized runs, the newest `N` are
+selected by `started_at DESC, run_id DESC`; deletion proceeds in
+`started_at ASC, run_id ASC` order. The complete schema and logical store are
+validated inside one `BEGIN IMMEDIATE` transaction before any candidate is
+deleted, and the remaining store is validated before commit. Events are
+deleted by the foreign-key cascade. Missing stores return zero deletions
+without creating a directory, lock, database, WAL, or SHM file.
+
+Prune does not run during runtime startup/shutdown, and there is no background
+retention, checkpoint, or `VACUUM`. SQLite file size is therefore not promised
+to shrink immediately. Full-store validation makes prune transaction duration
+proportional to retained history size; this bounded Alpha tradeoff favors
+fail-closed deletion over throughput.
+
+### Concurrency and threat boundary
+
+The advisory file lock protects only initialization/configuration and is not
+held for a runtime's lifetime. Different sessions use separate RTO-2 ownership
+locks and can write distinct runs to the shared WAL database. Short write
+transactions serialize through SQLite; read-only commands may observe a
+consistent snapshot while owners are active. Active runs remain incomplete and
+cannot be pruned.
+
+The security boundary assumes a private current-user directory at mode `0700`.
+Preflight and identity rechecks fail closed against unsafe paths, but the Alpha
+does not claim complete race freedom against a malicious same-UID process that
+can modify that private directory. It also makes no durability claim beyond
+SQLite `synchronous=FULL`, atomic initialization/publish, file and directory
+fsync, and successfully committed transactions.
+
+## RTO-3 limitations and next capabilities
+
+RTO-2 remains a foreground, single-host, current-user control session. RTO-3
+adds local persistence but no daemon, service installation, detached mode,
+background task, polling, automatic retry, reconnect, remote access,
+authentication, organization/location model, Trigger, Job, export/import,
+search, subscription, or GUI. Its only runtime backend is deterministic
+built-in simulation.
 
 RTO-1 is complete at `bee98b6c48725db2e9311b30fcf8f00126f6061e`.
-RTO-2 Local Runtime Process and Start/Stop CLI is the active capability. RTO-3
-will add Local Events and Run History; RTO-4 will close Runtime Operations Alpha
-acceptance. Simulation/Preview Alpha follows as a product layer. Physical
-hardware acceptance and Physical Hardware Proof remain a deferred parallel
-track and do not block these software capabilities. Any physical-validation
-claim still requires separate reviewed physical evidence.
+RTO-2 Local Runtime Process and Start/Stop CLI is complete. RTO-3 Local Events,
+Run History, and Explicit Retention is an implementation-complete C2 acceptance
+candidate; integration and hosted Linux/macOS evidence are still pending.
+RTO-4 will close Runtime Operations Alpha acceptance only after C2 passes those
+gates. Physical hardware acceptance and Physical Hardware Proof remain a
+deferred parallel track and cannot be inferred from this software evidence.

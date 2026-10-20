@@ -23,7 +23,7 @@ DEFERRED without treating it as complete:
 
 ### NOW
 
-**Runtime Operations Alpha — RTO-2 Local Runtime Process and Start/Stop CLI**
+**Runtime Operations Alpha — RTO-3 C2 acceptance candidate**
 
 The published `v0.1.0` Software Developer Preview remains the bounded release
 snapshot at commit `e3801ed43ec4b173dae765ac583055314defce50`. Current `main`
@@ -32,16 +32,33 @@ contains later Module/Driver SDK Alpha software evidence under package identity
 published to a package registry. A possible future `v0.2.0a1` tag and release
 require separate authorization; stable `0.2.0` remains reserved.
 
-RTO-2 establishes the first usable cross-process Runtime Operations workflow:
-one foreground process owns a simulation-backed runtime while separate CLI
-invocations inspect its sanitized snapshot and request ordered safe-stop and
-shutdown over a private Unix-domain socket. The bounded session protocol is
-local, versioned, deterministic, and current-user-only. It adds no daemon,
-TCP listener, cloud dependency, persistence, retry loop, or hardware access.
+RTO-1 and RTO-2 are done. RTO-3 Slice A, Slice B, and Slice C1 are accepted on
+`main`; together they provide the secure local SQLite run ledger, sanitized
+event persistence and queries, and explicit finalized-run pruning. The C2
+candidate adds no production behavior. Its local verification proves the full
+RTO-3 journey from a clean non-editable wheel and prepares a focused macOS CI
+portability job plus synchronized user and architecture documentation.
+
+Evidence state remains deliberately separate:
+
+- RTO-1 immutable runtime observations: **DONE**.
+- RTO-2 local foreground owner and process control: **DONE**.
+- RTO-3 implementation: **complete candidate**.
+- RTO-3 local C2 verification: **passed for review**.
+- RTO-3 integration and GitHub Linux/macOS acceptance: **pending the C2 commit
+  and its two-platform Quality gate**.
+- Physical HCA-1 proof: **pending on a separate opt-in track**.
+- RTO-4: **NEXT only after C2 integration and two-platform CI success**.
+
+The bounded session protocol and durable history remain local,
+current-user-only, deterministic, and simulation-backed. They add no daemon,
+TCP listener, cloud dependency, retry/reconnect loop, telemetry upload, or
+hardware access.
 
 ### NEXT
 
-1. RTO-3 Local Events and Run History.
+1. Integrate RTO-3 C2 and obtain successful Linux and macOS Quality gate
+   evidence.
 2. RTO-4 Runtime Operations Alpha Acceptance.
 3. Simulation/Preview Alpha.
 
@@ -131,6 +148,15 @@ TCP listener, cloud dependency, persistence, retry loop, or hardware access.
   `bee98b6c48725db2e9311b30fcf8f00126f6061e`, establishing immutable,
   deterministic, sanitized local runtime snapshots, structured lifecycle
   events, and the instance-local `RuntimeOperations` façade.
+- RTO-2 Local Runtime Process Control is accepted, establishing the
+  simulation-only foreground owner, private Unix-domain socket, strict local
+  protocol, cross-process start/status/stop CLI, and deterministic owned
+  cleanup.
+- RTO-3 Slice A, Slice B, and Slice C1 are accepted, establishing schema-v1
+  durable runs/events, bounded read-only queries, explicit retention pruning,
+  fail-closed corruption handling, and no automatic migration, repair, or
+  retention. C2 integration and hosted macOS evidence remain pending and are
+  therefore not recorded as DONE.
 
 ### PARALLEL / DEFERRED
 

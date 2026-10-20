@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import select
 import shutil
@@ -15,6 +16,7 @@ from dataclasses import dataclass
 from email.parser import BytesParser
 from email.policy import default
 from pathlib import Path
+from typing import cast
 
 SUCCESS = 0
 FAILURE = 1
@@ -25,6 +27,8 @@ EXPECTED_TRANSCRIPT = REPOSITORY_ROOT / "examples/expected/sim-motor.txt"
 DEMO_CONFIG = REPOSITORY_ROOT / "examples/configs/sim-motor.yaml"
 EXPECTED_LICENSE_EXPRESSION = "Apache-2.0"
 RUNTIME_SESSION = "clean-install"
+SECOND_RUNTIME_SESSION = "clean-install-two"
+UNKNOWN_RUN_ID = "00000000-0000-4000-8000-000000000000"
 EXPECTED_RUNTIME_READY = (
     b"session=clean-install",
     b"runtime=running",
@@ -42,6 +46,35 @@ EXPECTED_RUNTIME_STATUS = (
 )
 EXPECTED_RUNTIME_STOP = b"session=clean-install\nruntime=stopped\n"
 _READINESS_TIMEOUT_SECONDS = 15.0
+_OWNER_EXIT_TIMEOUT_SECONDS = 15.0
+_CLEANUP_TIMEOUT_SECONDS = 5.0
+_MAX_UNIX_SOCKET_PATH_BYTES = 103
+HISTORY_SUCCESS_MARKERS = (
+    "history-missing-store=passed",
+    "history-active-query=passed",
+    "history-post-stop-query=passed",
+    "history-cross-process-persistence=passed",
+    "history-events-cursor-json=passed",
+    "history-prune=passed",
+    "history-artifact-cleanup=passed",
+)
+_RUN_NOT_FOUND = b"error: runtime run is not found\n"
+_SUCCESS_EVENT_SUMMARIES = frozenset(
+    {
+        ("runtime_start", "requested", "runtime start requested"),
+        ("resource_start", "attempted", "resource start attempted"),
+        ("resource_start", "succeeded", "resource start succeeded"),
+        ("runtime_running", "succeeded", "runtime running"),
+        ("safe_stop", "requested", "safe-stop requested"),
+        ("safe_stop", "attempted", "motor safe-stop attempted"),
+        ("safe_stop", "succeeded", "motor safe-stop succeeded"),
+        ("safe_stop_cleanup", "completed", "safe-stop cleanup completed"),
+        ("runtime_shutdown", "requested", "runtime shutdown requested"),
+        ("resource_shutdown", "attempted", "resource shutdown attempted"),
+        ("resource_shutdown", "succeeded", "resource shutdown succeeded"),
+        ("runtime_stopped", "succeeded", "runtime stopped"),
+    }
+)
 EXPECTED_SCAFFOLD_FILES = (
     Path("README.md"),
     Path("acme_motor_driver/__init__.py"),
@@ -80,6 +113,9 @@ def main() -> int:
     """Run the clean-install gate with concise, sanitized status output."""
     try:
         wheel_name = run_clean_install_verification()
+    except KeyboardInterrupt:
+        print("error: clean-install verification interrupted", file=sys.stderr)
+        return FAILURE
     except VerificationEnvironmentBlocked:
         print(
             "blocked: clean-install verification requires package access and loopback support",
@@ -90,6 +126,8 @@ def main() -> int:
         print("error: clean-install verification failed", file=sys.stderr)
         return FAILURE
     print(f"wheel={wheel_name}")
+    for marker in HISTORY_SUCCESS_MARKERS:
+        print(marker)
     print("clean-install=passed")
     return SUCCESS
 
@@ -118,7 +156,13 @@ def run_clean_install_verification(
         build_output = workspace / "wheel"
         environment_path = workspace / "venv"
         copied_config = workspace / "sim-motor.yaml"
+        isolated_home = workspace / "home"
+        isolated_temp = workspace / "temp"
+        isolated_home.mkdir(mode=0o700)
+        isolated_temp.mkdir(mode=0o700)
         environment = _isolated_environment()
+        environment["HOME"] = str(isolated_home)
+        environment["TMPDIR"] = str(isolated_temp)
 
         _require_success(
             command_runner(
@@ -261,91 +305,662 @@ def verify_installed_runtime_workflow(
     workspace: Path,
     environment: Mapping[str, str],
 ) -> None:
-    """Prove cross-process control through the installed wheel executable."""
+    """Prove the complete RTO-3 journey through the installed wheel CLI."""
     if sys.platform not in {"darwin", "linux"}:
         raise VerificationEnvironmentBlocked
-    state_parent = Path("/private/tmp" if sys.platform == "darwin" else "/tmp")
+    state_parent = _short_temporary_parent()
     with tempfile.TemporaryDirectory(
-        prefix="hiyelx-wheel-runtime-",
+        prefix="hxctl-",
         dir=state_parent,
     ) as state_name:
         runtime_environment = dict(environment)
         runtime_environment["HIYELX_RUNTIME_STATE_DIR"] = state_name
-        owner: subprocess.Popen[bytes] | None = None
+        history_root = workspace / "history"
+        runtime_environment["HIYELX_RUNTIME_HISTORY_DIR"] = str(history_root)
+        _assert_short_control_path(Path(state_name), SECOND_RUNTIME_SESSION)
+        owners: list[tuple[subprocess.Popen[bytes], str]] = []
         try:
-            owner = subprocess.Popen(
-                (
-                    str(executable),
-                    "runtime",
-                    "start",
-                    str(config_path),
-                    "--session",
-                    RUNTIME_SESSION,
-                ),
-                cwd=workspace,
-                env=runtime_environment,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+            _verify_missing_history_store(
+                executable,
+                workspace=workspace,
+                environment=runtime_environment,
+                history_root=history_root,
             )
-            if _read_owner_lines(owner, len(EXPECTED_RUNTIME_READY)) != (
-                EXPECTED_RUNTIME_READY
-            ):
-                raise VerificationFailure
-
-            status = _require_success(
-                _run_command(
-                    (
-                        str(executable),
-                        "runtime",
-                        "status",
-                        "--session",
-                        RUNTIME_SESSION,
-                    ),
-                    workspace,
-                    runtime_environment,
-                ),
-                environment_sensitive=True,
+            first_owner = _start_installed_owner(
+                executable,
+                config_path,
+                session=RUNTIME_SESSION,
+                workspace=workspace,
+                environment=runtime_environment,
             )
-            if status.stdout != EXPECTED_RUNTIME_STATUS or status.stderr:
-                raise VerificationFailure
-
-            stopped = _require_success(
-                _run_command(
-                    (
-                        str(executable),
-                        "runtime",
-                        "stop",
-                        "--session",
-                        RUNTIME_SESSION,
-                    ),
-                    workspace,
-                    runtime_environment,
-                ),
-                environment_sensitive=True,
+            owners.append((first_owner, RUNTIME_SESSION))
+            first_run = _verify_active_runtime(
+                executable,
+                session=RUNTIME_SESSION,
+                workspace=workspace,
+                environment=runtime_environment,
             )
-            if stopped.stdout != EXPECTED_RUNTIME_STOP or stopped.stderr:
-                raise VerificationFailure
+            _stop_installed_owner(
+                first_owner,
+                executable,
+                session=RUNTIME_SESSION,
+                workspace=workspace,
+                environment=runtime_environment,
+                state_root=Path(state_name),
+            )
+            owners.remove((first_owner, RUNTIME_SESSION))
+            first_events = _verify_completed_run(
+                executable,
+                first_run,
+                workspace=workspace,
+                environment=runtime_environment,
+            )
 
-            remaining_stdout, remaining_stderr = owner.communicate(timeout=15)
-            if (
-                owner.returncode != SUCCESS
-                or remaining_stdout != b"runtime=stopped\n"
-                or remaining_stderr
-                or (Path(state_name) / RUNTIME_SESSION).exists()
-            ):
+            second_owner = _start_installed_owner(
+                executable,
+                config_path,
+                session=SECOND_RUNTIME_SESSION,
+                workspace=workspace,
+                environment=runtime_environment,
+            )
+            owners.append((second_owner, SECOND_RUNTIME_SESSION))
+            _verify_run_queryable(
+                executable,
+                first_run,
+                expected_result="completed",
+                workspace=workspace,
+                environment=runtime_environment,
+            )
+            second_run = _verify_active_runtime(
+                executable,
+                session=SECOND_RUNTIME_SESSION,
+                workspace=workspace,
+                environment=runtime_environment,
+            )
+            if second_run == first_run:
                 raise VerificationFailure
-        except subprocess.TimeoutExpired as error:
-            raise VerificationEnvironmentBlocked from error
-        except OSError as error:
-            raise VerificationEnvironmentBlocked from error
+            _stop_installed_owner(
+                second_owner,
+                executable,
+                session=SECOND_RUNTIME_SESSION,
+                workspace=workspace,
+                environment=runtime_environment,
+                state_root=Path(state_name),
+            )
+            owners.remove((second_owner, SECOND_RUNTIME_SESSION))
+            second_events = _verify_completed_run(
+                executable,
+                second_run,
+                workspace=workspace,
+                environment=runtime_environment,
+            )
+            _verify_two_run_persistence(
+                executable,
+                first_run=first_run,
+                second_run=second_run,
+                workspace=workspace,
+                environment=runtime_environment,
+            )
+            _verify_event_queries(
+                executable,
+                second_run,
+                second_events,
+                workspace=workspace,
+                environment=runtime_environment,
+            )
+            _verify_prune(
+                executable,
+                removed_run=first_run,
+                retained_run=second_run,
+                retained_events=second_events,
+                workspace=workspace,
+                environment=runtime_environment,
+            )
+            if len(first_events) != len(second_events):
+                raise VerificationFailure
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise VerificationFailure from error
         finally:
-            if owner is not None and owner.poll() is None:
-                owner.terminate()
-                try:
-                    owner.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    owner.kill()
-                    owner.wait(timeout=10)
+            for owner, session in reversed(owners):
+                _cleanup_owner(
+                    owner,
+                    executable,
+                    session=session,
+                    workspace=workspace,
+                    environment=runtime_environment,
+                )
+        if any(Path(state_name).iterdir()):
+            raise VerificationFailure
+
+
+def _verify_missing_history_store(
+    executable: Path,
+    *,
+    workspace: Path,
+    environment: Mapping[str, str],
+    history_root: Path,
+) -> None:
+    checks = (
+        (("runtime", "runs", "list"), SUCCESS, b"run-count=0\n", b""),
+        (
+            ("runtime", "runs", "show", UNKNOWN_RUN_ID),
+            11,
+            b"",
+            _RUN_NOT_FOUND,
+        ),
+        (
+            ("runtime", "events", "--run", UNKNOWN_RUN_ID),
+            11,
+            b"",
+            _RUN_NOT_FOUND,
+        ),
+        (
+            ("runtime", "runs", "prune", "--keep", "0"),
+            SUCCESS,
+            b"deleted-runs=0\n",
+            b"",
+        ),
+    )
+    for arguments, returncode, stdout, stderr in checks:
+        _require_exact_result(
+            _run_command((str(executable), *arguments), workspace, environment),
+            returncode=returncode,
+            stdout=stdout,
+            stderr=stderr,
+        )
+        if history_root.exists():
+            raise VerificationFailure
+
+
+def _start_installed_owner(
+    executable: Path,
+    config_path: Path,
+    *,
+    session: str,
+    workspace: Path,
+    environment: Mapping[str, str],
+) -> subprocess.Popen[bytes]:
+    owner = subprocess.Popen(
+        (
+            str(executable),
+            "runtime",
+            "start",
+            str(config_path),
+            "--session",
+            session,
+        ),
+        cwd=workspace,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    expected = (f"session={session}".encode(), b"runtime=running", b"control=ready")
+    try:
+        if _read_owner_lines(owner, len(expected)) != expected:
+            raise VerificationFailure
+    except BaseException:
+        _cleanup_owner(
+            owner,
+            executable,
+            session=session,
+            workspace=workspace,
+            environment=environment,
+        )
+        raise
+    return owner
+
+
+def _verify_active_runtime(
+    executable: Path,
+    *,
+    session: str,
+    workspace: Path,
+    environment: Mapping[str, str],
+) -> str:
+    status = _require_success(
+        _run_command(
+            (str(executable), "runtime", "status", "--session", session),
+            workspace,
+            environment,
+        ),
+        environment_sensitive=False,
+    )
+    expected_status = EXPECTED_RUNTIME_STATUS.replace(
+        b"session=clean-install\n", f"session={session}\n".encode(), 1
+    )
+    if status.stdout != expected_status or status.stderr:
+        raise VerificationFailure
+    listing = _load_canonical_json_result(
+        _run_command(
+            (str(executable), "runtime", "runs", "list", "--json"),
+            workspace,
+            environment,
+        )
+    )
+    raw_runs_value = listing.get("runs")
+    if not isinstance(raw_runs_value, list):
+        raise VerificationFailure
+    raw_runs = cast(list[object], raw_runs_value)
+    if listing.get("run_count") != len(raw_runs):
+        raise VerificationFailure
+    runs = [cast(dict[str, object], run) for run in raw_runs if isinstance(run, dict)]
+    if len(runs) != len(raw_runs):
+        raise VerificationFailure
+    matching = [run for run in runs if run.get("session_id") == session]
+    if len(matching) != 1 or matching[0].get("result") is not None:
+        raise VerificationFailure
+    run_id = matching[0].get("run_id")
+    if not isinstance(run_id, str):
+        raise VerificationFailure
+    shown = _load_canonical_json_result(
+        _run_command(
+            (str(executable), "runtime", "runs", "show", run_id, "--json"),
+            workspace,
+            environment,
+        )
+    )
+    if shown != matching[0] or shown.get("ended_at") is not None:
+        raise VerificationFailure
+    events = _load_event_page(
+        _run_command(
+            (str(executable), "runtime", "events", "--run", run_id, "--json"),
+            workspace,
+            environment,
+        ),
+        run_id=run_id,
+    )
+    if [event["sequence"] for event in events] != list(range(4)):
+        raise VerificationFailure
+    if shown.get("event_high_water_mark") != 3:
+        raise VerificationFailure
+    return run_id
+
+
+def _stop_installed_owner(
+    owner: subprocess.Popen[bytes],
+    executable: Path,
+    *,
+    session: str,
+    workspace: Path,
+    environment: Mapping[str, str],
+    state_root: Path,
+) -> None:
+    stopped = _require_success(
+        _run_command(
+            (str(executable), "runtime", "stop", "--session", session),
+            workspace,
+            environment,
+        ),
+        environment_sensitive=False,
+    )
+    expected = f"session={session}\nruntime=stopped\n".encode()
+    if stopped.stdout != expected or stopped.stderr:
+        raise VerificationFailure
+    try:
+        remaining_stdout, remaining_stderr = owner.communicate(
+            timeout=_OWNER_EXIT_TIMEOUT_SECONDS
+        )
+    except subprocess.TimeoutExpired as error:
+        _cleanup_owner(
+            owner,
+            executable,
+            session=session,
+            workspace=workspace,
+            environment=environment,
+        )
+        raise VerificationFailure from error
+    if (
+        owner.returncode != SUCCESS
+        or remaining_stdout != b"runtime=stopped\n"
+        or remaining_stderr
+        or (state_root / session).exists()
+    ):
+        raise VerificationFailure
+
+
+def _verify_completed_run(
+    executable: Path,
+    run_id: str,
+    *,
+    workspace: Path,
+    environment: Mapping[str, str],
+) -> list[dict[str, object]]:
+    run = _verify_run_queryable(
+        executable,
+        run_id,
+        expected_result="completed",
+        workspace=workspace,
+        environment=environment,
+    )
+    if (
+        run.get("stop_reason") != "cli_stop"
+        or not isinstance(run.get("ended_at"), str)
+        or run.get("event_high_water_mark") != 11
+    ):
+        raise VerificationFailure
+    events = _load_event_page(
+        _run_command(
+            (str(executable), "runtime", "events", "--run", run_id, "--json"),
+            workspace,
+            environment,
+        ),
+        run_id=run_id,
+    )
+    if [event["sequence"] for event in events] != list(range(12)):
+        raise VerificationFailure
+    return events
+
+
+def _verify_run_queryable(
+    executable: Path,
+    run_id: str,
+    *,
+    expected_result: str,
+    workspace: Path,
+    environment: Mapping[str, str],
+) -> dict[str, object]:
+    run = _load_canonical_json_result(
+        _run_command(
+            (str(executable), "runtime", "runs", "show", run_id, "--json"),
+            workspace,
+            environment,
+        )
+    )
+    if run.get("run_id") != run_id or run.get("result") != expected_result:
+        raise VerificationFailure
+    return run
+
+
+def _verify_two_run_persistence(
+    executable: Path,
+    *,
+    first_run: str,
+    second_run: str,
+    workspace: Path,
+    environment: Mapping[str, str],
+) -> None:
+    document = _load_canonical_json_result(
+        _run_command(
+            (str(executable), "runtime", "runs", "list", "--json"),
+            workspace,
+            environment,
+        )
+    )
+    raw_runs_value = document.get("runs")
+    if not isinstance(raw_runs_value, list) or document.get("run_count") != 2:
+        raise VerificationFailure
+    raw_runs = cast(list[object], raw_runs_value)
+    runs = [cast(dict[str, object], run) for run in raw_runs if isinstance(run, dict)]
+    if len(runs) != len(raw_runs) or [run.get("run_id") for run in runs] != [
+        second_run,
+        first_run,
+    ]:
+        raise VerificationFailure
+    if any(run.get("result") != "completed" for run in runs):
+        raise VerificationFailure
+
+
+def _verify_event_queries(
+    executable: Path,
+    run_id: str,
+    expected_events: list[dict[str, object]],
+    *,
+    workspace: Path,
+    environment: Mapping[str, str],
+) -> None:
+    text = _require_success(
+        _run_command(
+            (str(executable), "runtime", "events", "--run", run_id),
+            workspace,
+            environment,
+        ),
+        environment_sensitive=False,
+    )
+    if text.stderr or text.stdout != _render_event_page(run_id, expected_events):
+        raise VerificationFailure
+    after = _load_event_page(
+        _run_command(
+            (
+                str(executable),
+                "runtime",
+                "events",
+                "--run",
+                run_id,
+                "--after",
+                "3",
+                "--json",
+            ),
+            workspace,
+            environment,
+        ),
+        run_id=run_id,
+    )
+    limited = _load_event_page(
+        _run_command(
+            (
+                str(executable),
+                "runtime",
+                "events",
+                "--run",
+                run_id,
+                "--limit",
+                "1",
+                "--json",
+            ),
+            workspace,
+            environment,
+        ),
+        run_id=run_id,
+    )
+    maximum = _load_event_page(
+        _run_command(
+            (
+                str(executable),
+                "runtime",
+                "events",
+                "--run",
+                run_id,
+                "--limit",
+                "1000",
+                "--json",
+            ),
+            workspace,
+            environment,
+        ),
+        run_id=run_id,
+    )
+    if after != expected_events[4:] or limited != expected_events[:1] or maximum != expected_events:
+        raise VerificationFailure
+
+
+def _verify_prune(
+    executable: Path,
+    *,
+    removed_run: str,
+    retained_run: str,
+    retained_events: list[dict[str, object]],
+    workspace: Path,
+    environment: Mapping[str, str],
+) -> None:
+    _require_exact_result(
+        _run_command(
+            (str(executable), "runtime", "runs", "prune", "--keep", "1"),
+            workspace,
+            environment,
+        ),
+        returncode=SUCCESS,
+        stdout=b"deleted-runs=1\n",
+        stderr=b"",
+    )
+    for arguments in (
+        ("runtime", "runs", "show", removed_run),
+        ("runtime", "events", "--run", removed_run),
+    ):
+        _require_exact_result(
+            _run_command((str(executable), *arguments), workspace, environment),
+            returncode=11,
+            stdout=b"",
+            stderr=_RUN_NOT_FOUND,
+        )
+    _verify_run_queryable(
+        executable,
+        retained_run,
+        expected_result="completed",
+        workspace=workspace,
+        environment=environment,
+    )
+    events = _load_event_page(
+        _run_command(
+            (str(executable), "runtime", "events", "--run", retained_run, "--json"),
+            workspace,
+            environment,
+        ),
+        run_id=retained_run,
+    )
+    if events != retained_events:
+        raise VerificationFailure
+
+
+def _load_canonical_json_result(result: CommandResult) -> dict[str, object]:
+    successful = _require_success(result, environment_sensitive=False)
+    if successful.stderr or not successful.stdout.endswith(b"\n"):
+        raise VerificationFailure
+    try:
+        decoded = successful.stdout.decode("ascii")
+        raw_document: object = json.loads(decoded)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise VerificationFailure from error
+    if not isinstance(raw_document, dict):
+        raise VerificationFailure
+    document = cast(dict[str, object], raw_document)
+    canonical = (
+        json.dumps(document, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+        + "\n"
+    ).encode("ascii")
+    if canonical != successful.stdout:
+        raise VerificationFailure
+    return document
+
+
+def _load_event_page(result: CommandResult, *, run_id: str) -> list[dict[str, object]]:
+    document = _load_canonical_json_result(result)
+    raw_events_value = document.get("events")
+    if (
+        document.get("run_id") != run_id
+        or not isinstance(raw_events_value, list)
+    ):
+        raise VerificationFailure
+    raw_events = cast(list[object], raw_events_value)
+    if document.get("event_count") != len(raw_events):
+        raise VerificationFailure
+    validated: list[dict[str, object]] = []
+    previous: int | None = None
+    for raw_event in raw_events:
+        if not isinstance(raw_event, dict):
+            raise VerificationFailure
+        event = cast(dict[str, object], raw_event)
+        if event.get("run_id") != run_id:
+            raise VerificationFailure
+        sequence = event.get("sequence")
+        summary = event.get("summary")
+        event_type = event.get("event_type")
+        outcome = event.get("outcome")
+        if (
+            type(sequence) is not int
+            or (previous is not None and sequence != previous + 1)
+            or not isinstance(summary, str)
+            or any(ord(character) < 32 or ord(character) > 126 for character in summary)
+            or (event_type, outcome, summary) not in _SUCCESS_EVENT_SUMMARIES
+        ):
+            raise VerificationFailure
+        previous = sequence
+        validated.append(event)
+    return validated
+
+
+def _render_event_page(run_id: str, events: list[dict[str, object]]) -> bytes:
+    lines = [f"run={run_id}", f"event-count={len(events)}"]
+    for event in events:
+        lines.append(
+            f"event={event['sequence']} type={event['event_type']} "
+            f"outcome={event['outcome']} severity={event['severity']} "
+            f"resource={event['resource_identity'] or 'none'} "
+            f"lifecycle={event['lifecycle_state'] or 'none'} "
+            f"health={event['health_status'] or 'none'} "
+            f"recorded-at={event['recorded_at']} summary={event['summary']}"
+        )
+    return ("\n".join(lines) + "\n").encode("ascii")
+
+
+def _require_exact_result(
+    result: CommandResult,
+    *,
+    returncode: int,
+    stdout: bytes,
+    stderr: bytes,
+) -> None:
+    if (
+        result.returncode != returncode
+        or result.stdout != stdout
+        or result.stderr != stderr
+    ):
+        raise VerificationFailure
+
+
+def _short_temporary_parent() -> Path:
+    parent = Path(tempfile.gettempdir()).resolve()
+    if not parent.is_absolute() or not parent.is_dir():
+        raise VerificationEnvironmentBlocked
+    return parent
+
+
+def _assert_short_control_path(state_root: Path, session: str) -> None:
+    socket_path = state_root / session / "control.sock"
+    if len(os.fsencode(socket_path)) > _MAX_UNIX_SOCKET_PATH_BYTES:
+        raise VerificationEnvironmentBlocked
+
+
+def _cleanup_owner(
+    owner: subprocess.Popen[bytes],
+    executable: Path,
+    *,
+    session: str,
+    workspace: Path,
+    environment: Mapping[str, str],
+) -> None:
+    if owner.poll() is not None:
+        return
+    primary_error: BaseException | None = None
+    try:
+        subprocess.run(
+            (str(executable), "runtime", "stop", "--session", session),
+            cwd=workspace,
+            env=environment,
+            capture_output=True,
+            check=False,
+            timeout=_CLEANUP_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    except BaseException as error:
+        primary_error = error
+    cleanup_error: VerificationFailure | None = None
+    try:
+        owner.wait(timeout=_CLEANUP_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        owner.terminate()
+        try:
+            owner.wait(timeout=_CLEANUP_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            owner.kill()
+            try:
+                owner.wait(timeout=_CLEANUP_TIMEOUT_SECONDS)
+            except (OSError, subprocess.TimeoutExpired):
+                cleanup_error = VerificationFailure()
+    if primary_error is not None:
+        raise primary_error
+    if cleanup_error is not None:
+        raise cleanup_error
 
 
 def _verify_runtime_runner_contract(
@@ -373,7 +988,7 @@ def _verify_runtime_runner_contract(
             workspace,
             runtime_environment,
         ),
-        environment_sensitive=True,
+        environment_sensitive=False,
     )
     expected_owner = b"\n".join(EXPECTED_RUNTIME_READY) + b"\nruntime=stopped\n"
     if started.stdout != expected_owner or started.stderr:
@@ -384,7 +999,7 @@ def _verify_runtime_runner_contract(
             workspace,
             runtime_environment,
         ),
-        environment_sensitive=True,
+        environment_sensitive=False,
     )
     if status.stdout != EXPECTED_RUNTIME_STATUS or status.stderr:
         raise VerificationFailure
@@ -394,7 +1009,7 @@ def _verify_runtime_runner_contract(
             workspace,
             runtime_environment,
         ),
-        environment_sensitive=True,
+        environment_sensitive=False,
     )
     if stopped.stdout != EXPECTED_RUNTIME_STOP or stopped.stderr:
         raise VerificationFailure
@@ -424,6 +1039,12 @@ def assert_installed_package_path(
     if resolved == source or source in resolved.parents:
         raise VerificationFailure
     if resolved != environment and environment not in resolved.parents:
+        raise VerificationFailure
+    try:
+        relative = resolved.relative_to(environment)
+    except ValueError as error:
+        raise VerificationFailure from error
+    if "site-packages" not in relative.parts:
         raise VerificationFailure
 
 
@@ -483,8 +1104,8 @@ def _run_command(
             check=False,
             timeout=180,
         )
-    except subprocess.TimeoutExpired as error:
-        raise VerificationEnvironmentBlocked from error
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise VerificationFailure from error
     return CommandResult(completed.returncode, completed.stdout, completed.stderr)
 
 
@@ -515,9 +1136,6 @@ def _read_owner_lines(
         except OSError as error:
             raise VerificationFailure from error
         if not chunk:
-            stderr = owner.stderr.read() if owner.poll() is not None else b""
-            if _looks_environment_blocked(stderr):
-                raise VerificationEnvironmentBlocked
             raise VerificationFailure
         pending.extend(chunk)
     return tuple(lines)
@@ -530,23 +1148,22 @@ def _require_success(
 ) -> CommandResult:
     if result.returncode == SUCCESS:
         return result
-    if environment_sensitive and _looks_environment_blocked(result.stderr):
+    if environment_sensitive and _looks_dependency_environment_blocked(result.stderr):
         raise VerificationEnvironmentBlocked
     raise VerificationFailure
 
 
-def _looks_environment_blocked(stderr: bytes) -> bool:
+def _looks_dependency_environment_blocked(stderr: bytes) -> bool:
     lowered = stderr.lower()
     indicators = (
-        b"network",
-        b"connection",
-        b"dns",
-        b"resolve",
-        b"timed out",
-        b"operation not permitted",
-        b"permission denied",
-        b"failed to bind",
-        b"python 3.12",
+        b"could not resolve host",
+        b"temporary failure in name resolution",
+        b"name or service not known",
+        b"failed to lookup address information",
+        b"network is unreachable",
+        b"dns error",
+        b"no interpreter found for python 3.12",
+        b"python 3.12 is not installed",
     )
     return any(indicator in lowered for indicator in indicators)
 
