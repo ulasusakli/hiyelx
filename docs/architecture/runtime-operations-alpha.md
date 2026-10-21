@@ -361,8 +361,26 @@ built-in simulation.
 
 RTO-1 is complete at `bee98b6c48725db2e9311b30fcf8f00126f6061e`.
 RTO-2 Local Runtime Process and Start/Stop CLI is complete. RTO-3 Local Events,
-Run History, and Explicit Retention is an implementation-complete C2 acceptance
-candidate; integration and hosted Linux/macOS evidence are still pending.
-RTO-4 will close Runtime Operations Alpha acceptance only after C2 passes those
-gates. Physical hardware acceptance and Physical Hardware Proof remain a
+Run History, and Explicit Retention is complete: Slices A, B, C1, and C2 are
+integrated and accepted. C2 was integrated at
+`c40a66d4360272070403d14b9341ad95c455ad07`, and runner portability was
+integrated at `7c402a4be4468d3e9501a8035c8df5a7d285676f`.
+
+The
+[`39493825893` Quality gate](https://github.com/ulasusakli/hiyelx/actions/runs/39493825893)
+passed at the latter commit. Ubuntu reported `621 passed, 1 skipped`, with the
+physical XL430 acceptance test explicitly unselected, and passed the clean
+installed-wheel journey. The standard GitHub-hosted `macos-15-intel` runner
+provided macOS 15 on Intel/x86_64 and passed 296 focused tests, the clean
+installed-wheel RTO-3 journey, and artifact cleanup.
+
+No hosted ARM64/Apple Silicon passing evidence was produced or required by the
+current RTO-3 acceptance contract. Two earlier ARM64 runner-capacity attempts
+received no runner and executed no test steps; they are infrastructure-capacity
+blockers rather than product/test failures, and they are not passing evidence.
+
+This closes only RTO-3 technical software/runtime acceptance. Package version
+remains `0.2.0a1`; no new tag, release, or package publication was created.
+RTO-4 Runtime Operations Alpha Acceptance is next and has not started or been
+accepted. Physical hardware acceptance and Physical Hardware Proof remain a
 deferred parallel track and cannot be inferred from this software evidence.

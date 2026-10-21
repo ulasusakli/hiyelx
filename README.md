@@ -4,7 +4,7 @@ HIYELX is a hardware-independent robotics software platform for building, runnin
 
 ## Current stage
 
-**PRE-SEED — Runtime Operations Alpha, RTO-3 C2 candidate**
+**PRE-SEED — Runtime Operations Alpha, RTO-3 complete; RTO-4 next**
 
 The bounded [`v0.1.0` Software Developer Preview](https://github.com/ulasusakli/hiyelx/releases/tag/v0.1.0)
 was published as a GitHub pre-release from commit
@@ -127,9 +127,9 @@ It provides immutable deterministic snapshots of one local Runtime Manager,
 ordered resource lifecycle and health state, startup ownership, and structured
 instance-local events.
 
-RTO-2 Local Runtime Process Control and the RTO-3 local run/event ledger are
-implemented on current `main`. Start the canonical simulation runtime in one
-terminal:
+RTO-2 Local Runtime Process Control and RTO-3 Local Events, Run History, and
+Explicit Retention are complete on current `main`. Start the canonical
+simulation runtime in one terminal:
 
 ```bash
 hiyelx runtime start examples/configs/sim-motor.yaml --session local-sim
@@ -179,10 +179,32 @@ Verify the complete non-editable installed-wheel RTO-3 journey with:
 uv run python scripts/verify_clean_install.py
 ```
 
-RTO-3 C2 integration and Linux/macOS CI acceptance are still pending review;
-RTO-4 follows only after that evidence passes. This simulation-only software
-workflow is not Physical Hardware Proof. Physical evidence remains a separate
-track and any physical-validation claim requires separate reviewed evidence.
+RTO-3 Slices A, B, C1, and C2 are integrated and accepted. The C2
+implementation and acceptance commit is
+`c40a66d4360272070403d14b9341ad95c455ad07`; the runner-portability commit is
+`7c402a4be4468d3e9501a8035c8df5a7d285676f`. The
+[`39493825893` Quality gate](https://github.com/ulasusakli/hiyelx/actions/runs/39493825893)
+tested that exact portability commit and passed both hosted jobs:
+
+- Ubuntu: Ruff passed, Pyright reported `0 errors, 0 warnings`, pytest reported
+  `621 passed, 1 skipped`, and the clean installed-wheel journey passed. The
+  one skip was the explicitly unselected physical XL430 acceptance test; it
+  was not counted as passing.
+- macOS: the standard GitHub-hosted `macos-15-intel` runner provided macOS 15
+  on Intel/x86_64; all 296 focused tests, the clean installed-wheel RTO-3
+  journey, and artifact cleanup passed.
+
+No hosted ARM64/Apple Silicon passing evidence was produced. Two earlier ARM64
+runner-capacity attempts received no runner and executed no test steps; they
+were infrastructure-capacity blockers rather than product or test failures,
+but they are not passing evidence. ARM64 is not mandatory in the current RTO-3
+acceptance contract.
+
+RTO-3 technical software/runtime acceptance is complete. RTO-4 Runtime
+Operations Alpha Acceptance is next but has not started or been accepted. This
+closure does not change package version `0.2.0a1`, create a tag, release, or
+package publication, or provide Physical Hardware Proof. Physical hardware
+acceptance remains a separate pending track.
 
 ## Pre-seed scope
 

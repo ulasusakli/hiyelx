@@ -23,7 +23,7 @@ DEFERRED without treating it as complete:
 
 ### NOW
 
-**Runtime Operations Alpha — RTO-3 C2 acceptance candidate**
+**Runtime Operations Alpha — RTO-3 complete; RTO-4 next**
 
 The published `v0.1.0` Software Developer Preview remains the bounded release
 snapshot at commit `e3801ed43ec4b173dae765ac583055314defce50`. Current `main`
@@ -32,23 +32,34 @@ contains later Module/Driver SDK Alpha software evidence under package identity
 published to a package registry. A possible future `v0.2.0a1` tag and release
 require separate authorization; stable `0.2.0` remains reserved.
 
-RTO-1 and RTO-2 are done. RTO-3 Slice A, Slice B, and Slice C1 are accepted on
-`main`; together they provide the secure local SQLite run ledger, sanitized
-event persistence and queries, and explicit finalized-run pruning. The C2
-candidate adds no production behavior. Its local verification proves the full
-RTO-3 journey from a clean non-editable wheel and prepares a focused macOS CI
-portability job plus synchronized user and architecture documentation.
+RTO-1 and RTO-2 are done. RTO-3 Slice A, Slice B, Slice C1, and Slice C2 are
+integrated and accepted on `main`; together they provide the secure local
+SQLite run ledger, sanitized event persistence and queries, explicit
+finalized-run pruning, and the verified full journey from a clean non-editable
+wheel. C2 was integrated at
+`c40a66d4360272070403d14b9341ad95c455ad07`; CI runner portability was
+integrated at `7c402a4be4468d3e9501a8035c8df5a7d285676f`.
 
 Evidence state remains deliberately separate:
 
 - RTO-1 immutable runtime observations: **DONE**.
 - RTO-2 local foreground owner and process control: **DONE**.
-- RTO-3 implementation: **complete candidate**.
-- RTO-3 local C2 verification: **passed for review**.
-- RTO-3 integration and GitHub Linux/macOS acceptance: **pending the C2 commit
-  and its two-platform Quality gate**.
+- RTO-3 implementation and technical acceptance gates: **DONE**.
+- RTO-3 Slice C2: **integrated and accepted**.
+- GitHub Quality gate
+  [`39493825893`](https://github.com/ulasusakli/hiyelx/actions/runs/39493825893):
+  **passed** at `7c402a4be4468d3e9501a8035c8df5a7d285676f`.
+- Hosted Ubuntu: **621 passed, 1 physical XL430 test explicitly skipped; clean
+  installed-wheel passed**.
+- Hosted macOS 15 on the standard GitHub-hosted `macos-15-intel` Intel/x86_64
+  runner: **296 focused tests and the clean installed-wheel RTO-3 journey
+  passed, including artifact cleanup**.
+- Hosted ARM64/Apple Silicon acceptance: **not produced and not required by the
+  current RTO-3 contract**. Two earlier ARM64 runner-capacity attempts received
+  no runner and ran no test steps; they were not product/test failures and are
+  not passing evidence.
 - Physical HCA-1 proof: **pending on a separate opt-in track**.
-- RTO-4: **NEXT only after C2 integration and two-platform CI success**.
+- RTO-4 Runtime Operations Alpha Acceptance: **NEXT; not started or accepted**.
 
 The bounded session protocol and durable history remain local,
 current-user-only, deterministic, and simulation-backed. They add no daemon,
@@ -57,10 +68,8 @@ hardware access.
 
 ### NEXT
 
-1. Integrate RTO-3 C2 and obtain successful Linux and macOS Quality gate
-   evidence.
-2. RTO-4 Runtime Operations Alpha Acceptance.
-3. Simulation/Preview Alpha.
+1. RTO-4 Runtime Operations Alpha Acceptance.
+2. Simulation/Preview Alpha.
 
 ### DONE
 
@@ -152,11 +161,16 @@ hardware access.
   simulation-only foreground owner, private Unix-domain socket, strict local
   protocol, cross-process start/status/stop CLI, and deterministic owned
   cleanup.
-- RTO-3 Slice A, Slice B, and Slice C1 are accepted, establishing schema-v1
-  durable runs/events, bounded read-only queries, explicit retention pruning,
-  fail-closed corruption handling, and no automatic migration, repair, or
-  retention. C2 integration and hosted macOS evidence remain pending and are
-  therefore not recorded as DONE.
+- RTO-3 Slice A, Slice B, Slice C1, and Slice C2 are integrated and accepted,
+  establishing schema-v1 durable runs/events, bounded read-only queries,
+  explicit retention pruning, fail-closed corruption handling, no automatic
+  migration, repair, or retention, and clean installed-wheel verification.
+  Quality gate
+  [`39493825893`](https://github.com/ulasusakli/hiyelx/actions/runs/39493825893)
+  passed Ubuntu and macOS Intel/x86_64 at
+  `7c402a4be4468d3e9501a8035c8df5a7d285676f`. This closes RTO-3 technical
+  software/runtime acceptance only; it does not close physical acceptance,
+  publish package `0.2.0a1`, or create a `v0.2.0a1` tag or release.
 
 ### PARALLEL / DEFERRED
 
