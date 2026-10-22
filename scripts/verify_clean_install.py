@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 import zipfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -28,6 +29,8 @@ DEMO_CONFIG = REPOSITORY_ROOT / "examples/configs/sim-motor.yaml"
 EXPECTED_LICENSE_EXPRESSION = "Apache-2.0"
 RUNTIME_SESSION = "clean-install"
 SECOND_RUNTIME_SESSION = "clean-install-two"
+THIRD_RUNTIME_SESSION = "clean-install-three"
+FOURTH_RUNTIME_SESSION = "clean-install-four"
 UNKNOWN_RUN_ID = "00000000-0000-4000-8000-000000000000"
 EXPECTED_RUNTIME_READY = (
     b"session=clean-install",
@@ -49,6 +52,7 @@ _READINESS_TIMEOUT_SECONDS = 15.0
 _OWNER_EXIT_TIMEOUT_SECONDS = 15.0
 _CLEANUP_TIMEOUT_SECONDS = 5.0
 _MAX_UNIX_SOCKET_PATH_BYTES = 103
+_RUNTIME_STATE_DIRECTORY_PREFIX = "hx-"
 HISTORY_SUCCESS_MARKERS = (
     "history-missing-store=passed",
     "history-active-query=passed",
@@ -58,23 +62,30 @@ HISTORY_SUCCESS_MARKERS = (
     "history-prune=passed",
     "history-artifact-cleanup=passed",
 )
-_RUN_NOT_FOUND = b"error: runtime run is not found\n"
-_SUCCESS_EVENT_SUMMARIES = frozenset(
-    {
-        ("runtime_start", "requested", "runtime start requested"),
-        ("resource_start", "attempted", "resource start attempted"),
-        ("resource_start", "succeeded", "resource start succeeded"),
-        ("runtime_running", "succeeded", "runtime running"),
-        ("safe_stop", "requested", "safe-stop requested"),
-        ("safe_stop", "attempted", "motor safe-stop attempted"),
-        ("safe_stop", "succeeded", "motor safe-stop succeeded"),
-        ("safe_stop_cleanup", "completed", "safe-stop cleanup completed"),
-        ("runtime_shutdown", "requested", "runtime shutdown requested"),
-        ("resource_shutdown", "attempted", "resource shutdown attempted"),
-        ("resource_shutdown", "succeeded", "resource shutdown succeeded"),
-        ("runtime_stopped", "succeeded", "runtime stopped"),
-    }
+RTO4_B1_SUCCESS_MARKERS = (
+    "rto4-wheel-built=passed",
+    "rto4-source-isolation=passed",
+    "rto4-env=passed",
+    "rto4-events=passed",
+    "rto4-prune=passed",
+    "rto4-multi=passed",
 )
+_RUN_NOT_FOUND = b"error: runtime run is not found\n"
+_SUCCESS_EVENT_SEQUENCE = (
+    ("runtime_start", "requested", "runtime start requested"),
+    ("resource_start", "attempted", "resource start attempted"),
+    ("resource_start", "succeeded", "resource start succeeded"),
+    ("runtime_running", "succeeded", "runtime running"),
+    ("safe_stop", "requested", "safe-stop requested"),
+    ("safe_stop", "attempted", "motor safe-stop attempted"),
+    ("safe_stop", "succeeded", "motor safe-stop succeeded"),
+    ("safe_stop_cleanup", "completed", "safe-stop cleanup completed"),
+    ("runtime_shutdown", "requested", "runtime shutdown requested"),
+    ("resource_shutdown", "attempted", "resource shutdown attempted"),
+    ("resource_shutdown", "succeeded", "resource shutdown succeeded"),
+    ("runtime_stopped", "succeeded", "runtime stopped"),
+)
+_SUCCESS_EVENT_SUMMARIES = frozenset(_SUCCESS_EVENT_SEQUENCE)
 EXPECTED_SCAFFOLD_FILES = (
     Path("README.md"),
     Path("acme_motor_driver/__init__.py"),
@@ -129,6 +140,8 @@ def main() -> int:
     for marker in HISTORY_SUCCESS_MARKERS:
         print(marker)
     print("clean-install=passed")
+    for marker in RTO4_B1_SUCCESS_MARKERS:
+        print(marker)
     return SUCCESS
 
 
@@ -310,15 +323,22 @@ def verify_installed_runtime_workflow(
         raise VerificationEnvironmentBlocked
     state_parent = _short_temporary_parent()
     with tempfile.TemporaryDirectory(
-        prefix="hxctl-",
+        prefix=_RUNTIME_STATE_DIRECTORY_PREFIX,
         dir=state_parent,
     ) as state_name:
         runtime_environment = dict(environment)
         runtime_environment["HIYELX_RUNTIME_STATE_DIR"] = state_name
         history_root = workspace / "history"
         runtime_environment["HIYELX_RUNTIME_HISTORY_DIR"] = str(history_root)
-        _assert_short_control_path(Path(state_name), SECOND_RUNTIME_SESSION)
+        for session in (
+            RUNTIME_SESSION,
+            SECOND_RUNTIME_SESSION,
+            THIRD_RUNTIME_SESSION,
+            FOURTH_RUNTIME_SESSION,
+        ):
+            _assert_short_control_path(Path(state_name), session)
         owners: list[tuple[subprocess.Popen[bytes], str]] = []
+        primary_error: BaseException | None = None
         try:
             _verify_missing_history_store(
                 executable,
@@ -332,8 +352,8 @@ def verify_installed_runtime_workflow(
                 session=RUNTIME_SESSION,
                 workspace=workspace,
                 environment=runtime_environment,
+                cleanup_registry=owners,
             )
-            owners.append((first_owner, RUNTIME_SESSION))
             first_run = _verify_active_runtime(
                 executable,
                 session=RUNTIME_SESSION,
@@ -362,8 +382,8 @@ def verify_installed_runtime_workflow(
                 session=SECOND_RUNTIME_SESSION,
                 workspace=workspace,
                 environment=runtime_environment,
+                cleanup_registry=owners,
             )
-            owners.append((second_owner, SECOND_RUNTIME_SESSION))
             _verify_run_queryable(
                 executable,
                 first_run,
@@ -408,27 +428,122 @@ def verify_installed_runtime_workflow(
                 workspace=workspace,
                 environment=runtime_environment,
             )
-            _verify_prune(
+
+            third_owner = _start_installed_owner(
+                executable,
+                config_path,
+                session=THIRD_RUNTIME_SESSION,
+                workspace=workspace,
+                environment=runtime_environment,
+                cleanup_registry=owners,
+            )
+            third_run = _verify_active_runtime(
+                executable,
+                session=THIRD_RUNTIME_SESSION,
+                workspace=workspace,
+                environment=runtime_environment,
+            )
+            fourth_owner = _start_installed_owner(
+                executable,
+                config_path,
+                session=FOURTH_RUNTIME_SESSION,
+                workspace=workspace,
+                environment=runtime_environment,
+                cleanup_registry=owners,
+            )
+            fourth_run = _verify_active_runtime(
+                executable,
+                session=FOURTH_RUNTIME_SESSION,
+                workspace=workspace,
+                environment=runtime_environment,
+            )
+            if third_owner.pid == fourth_owner.pid:
+                raise VerificationFailure
+            _assert_distinct_canonical_run_ids(
+                (first_run, second_run, third_run, fourth_run)
+            )
+            _verify_b1_active_safe_prune(
                 executable,
                 removed_run=first_run,
-                retained_run=second_run,
-                retained_events=second_events,
+                retained_finalized_run=second_run,
+                retained_finalized_events=second_events,
+                active_runs=(
+                    (THIRD_RUNTIME_SESSION, third_run),
+                    (FOURTH_RUNTIME_SESSION, fourth_run),
+                ),
+                workspace=workspace,
+                environment=runtime_environment,
+            )
+
+            _stop_installed_owner(
+                third_owner,
+                executable,
+                session=THIRD_RUNTIME_SESSION,
+                workspace=workspace,
+                environment=runtime_environment,
+                state_root=Path(state_name),
+            )
+            owners.remove((third_owner, THIRD_RUNTIME_SESSION))
+            third_events = _verify_completed_run(
+                executable,
+                third_run,
+                workspace=workspace,
+                environment=runtime_environment,
+            )
+            if (
+                _verify_active_runtime(
+                    executable,
+                    session=FOURTH_RUNTIME_SESSION,
+                    workspace=workspace,
+                    environment=runtime_environment,
+                )
+                != fourth_run
+            ):
+                raise VerificationFailure
+
+            _stop_installed_owner(
+                fourth_owner,
+                executable,
+                session=FOURTH_RUNTIME_SESSION,
+                workspace=workspace,
+                environment=runtime_environment,
+                state_root=Path(state_name),
+            )
+            owners.remove((fourth_owner, FOURTH_RUNTIME_SESSION))
+            fourth_events = _verify_completed_run(
+                executable,
+                fourth_run,
+                workspace=workspace,
+                environment=runtime_environment,
+            )
+            _verify_b1_final_history(
+                executable,
+                removed_run=first_run,
+                retained_runs=(second_run, third_run, fourth_run),
                 workspace=workspace,
                 environment=runtime_environment,
             )
             if len(first_events) != len(second_events):
                 raise VerificationFailure
+            if not (
+                len(second_events) == len(third_events) == len(fourth_events)
+            ):
+                raise VerificationFailure
         except (OSError, subprocess.TimeoutExpired) as error:
-            raise VerificationFailure from error
-        finally:
-            for owner, session in reversed(owners):
-                _cleanup_owner(
-                    owner,
-                    executable,
-                    session=session,
-                    workspace=workspace,
-                    environment=runtime_environment,
-                )
+            primary_error = VerificationFailure()
+            primary_error.__cause__ = error
+        except BaseException as error:
+            primary_error = error
+        cleanup_error = _cleanup_registered_owners(
+            owners,
+            executable,
+            workspace=workspace,
+            environment=runtime_environment,
+        )
+        if primary_error is not None:
+            raise primary_error
+        if cleanup_error is not None:
+            raise cleanup_error
         if any(Path(state_name).iterdir()):
             raise VerificationFailure
 
@@ -479,6 +594,7 @@ def _start_installed_owner(
     session: str,
     workspace: Path,
     environment: Mapping[str, str],
+    cleanup_registry: list[tuple[subprocess.Popen[bytes], str]] | None = None,
 ) -> subprocess.Popen[bytes]:
     owner = subprocess.Popen(
         (
@@ -494,18 +610,24 @@ def _start_installed_owner(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
+    if cleanup_registry is not None:
+        cleanup_registry.append((owner, session))
     expected = (f"session={session}".encode(), b"runtime=running", b"control=ready")
     try:
         if _read_owner_lines(owner, len(expected)) != expected:
             raise VerificationFailure
     except BaseException:
-        _cleanup_owner(
-            owner,
-            executable,
-            session=session,
-            workspace=workspace,
-            environment=environment,
-        )
+        try:
+            _cleanup_owner(
+                owner,
+                executable,
+                session=session,
+                workspace=workspace,
+                environment=environment,
+            )
+        finally:
+            if cleanup_registry is not None and owner.poll() is not None:
+                cleanup_registry.remove((owner, session))
         raise
     return owner
 
@@ -569,8 +691,7 @@ def _verify_active_runtime(
         ),
         run_id=run_id,
     )
-    if [event["sequence"] for event in events] != list(range(4)):
-        raise VerificationFailure
+    _assert_exact_success_events(events, count=4)
     if shown.get("event_high_water_mark") != 3:
         raise VerificationFailure
     return run_id
@@ -646,8 +767,7 @@ def _verify_completed_run(
         ),
         run_id=run_id,
     )
-    if [event["sequence"] for event in events] != list(range(12)):
-        raise VerificationFailure
+    _assert_exact_success_events(events, count=12)
     return events
 
 
@@ -655,7 +775,7 @@ def _verify_run_queryable(
     executable: Path,
     run_id: str,
     *,
-    expected_result: str,
+    expected_result: str | None,
     workspace: Path,
     environment: Mapping[str, str],
 ) -> dict[str, object]:
@@ -821,6 +941,171 @@ def _verify_prune(
         raise VerificationFailure
 
 
+def _verify_b1_active_safe_prune(
+    executable: Path,
+    *,
+    removed_run: str,
+    retained_finalized_run: str,
+    retained_finalized_events: list[dict[str, object]],
+    active_runs: Sequence[tuple[str, str]],
+    workspace: Path,
+    environment: Mapping[str, str],
+) -> None:
+    if len(active_runs) != 2:
+        raise VerificationFailure
+    _verify_prune(
+        executable,
+        removed_run=removed_run,
+        retained_run=retained_finalized_run,
+        retained_events=retained_finalized_events,
+        workspace=workspace,
+        environment=environment,
+    )
+    _verify_b1_pruned_run_listing(
+        executable,
+        retained_finalized_run=retained_finalized_run,
+        active_runs=active_runs,
+        workspace=workspace,
+        environment=environment,
+    )
+    observed: list[str] = []
+    for session, expected_run in active_runs:
+        active_run = _verify_active_runtime(
+            executable,
+            session=session,
+            workspace=workspace,
+            environment=environment,
+        )
+        if active_run != expected_run:
+            raise VerificationFailure
+        observed.append(active_run)
+    _assert_distinct_canonical_run_ids(
+        (removed_run, retained_finalized_run, *observed)
+    )
+
+
+def _verify_b1_pruned_run_listing(
+    executable: Path,
+    *,
+    retained_finalized_run: str,
+    active_runs: Sequence[tuple[str, str]],
+    workspace: Path,
+    environment: Mapping[str, str],
+) -> None:
+    _document, runs = _load_run_list(
+        _run_command(
+            (str(executable), "runtime", "runs", "list", "--json"),
+            workspace,
+            environment,
+        )
+    )
+    expected_active = {run_id: session for session, run_id in active_runs}
+    expected_ids = {retained_finalized_run, *expected_active}
+    if len(runs) != len(expected_ids):
+        raise VerificationFailure
+    if {run.get("run_id") for run in runs} != expected_ids:
+        raise VerificationFailure
+    for run in runs:
+        run_id = run.get("run_id")
+        if run_id == retained_finalized_run:
+            if run.get("result") != "completed":
+                raise VerificationFailure
+        elif (
+            not isinstance(run_id, str)
+            or run.get("session_id") != expected_active.get(run_id)
+            or run.get("result") is not None
+            or run.get("ended_at") is not None
+            or run.get("event_high_water_mark") != 3
+        ):
+            raise VerificationFailure
+
+
+def _verify_b1_final_history(
+    executable: Path,
+    *,
+    removed_run: str,
+    retained_runs: Sequence[str],
+    workspace: Path,
+    environment: Mapping[str, str],
+) -> None:
+    document, runs = _load_run_list(
+        _run_command(
+            (str(executable), "runtime", "runs", "list", "--json"),
+            workspace,
+            environment,
+        )
+    )
+    if document.get("run_count") != len(retained_runs):
+        raise VerificationFailure
+    if {run.get("run_id") for run in runs} != set(retained_runs):
+        raise VerificationFailure
+    if removed_run in {run.get("run_id") for run in runs}:
+        raise VerificationFailure
+    if any(
+        run.get("result") != "completed"
+        or run.get("stop_reason") != "cli_stop"
+        or not isinstance(run.get("ended_at"), str)
+        or run.get("event_high_water_mark") != 11
+        for run in runs
+    ):
+        raise VerificationFailure
+    ordering: list[tuple[str, str]] = []
+    for run in runs:
+        started_at = run.get("started_at")
+        run_id = run.get("run_id")
+        if not isinstance(started_at, str) or not isinstance(run_id, str):
+            raise VerificationFailure
+        ordering.append((started_at, run_id))
+    if ordering != sorted(ordering, reverse=True):
+        raise VerificationFailure
+    _assert_distinct_canonical_run_ids(tuple(retained_runs))
+
+
+def _load_run_list(
+    result: CommandResult,
+) -> tuple[dict[str, object], list[dict[str, object]]]:
+    document = _load_canonical_json_result(result)
+    raw_runs_value = document.get("runs")
+    if not isinstance(raw_runs_value, list):
+        raise VerificationFailure
+    raw_runs = cast(list[object], raw_runs_value)
+    if document.get("run_count") != len(raw_runs):
+        raise VerificationFailure
+    runs = [cast(dict[str, object], run) for run in raw_runs if isinstance(run, dict)]
+    if len(runs) != len(raw_runs):
+        raise VerificationFailure
+    return document, runs
+
+
+def _assert_distinct_canonical_run_ids(run_ids: Sequence[str]) -> None:
+    if len(run_ids) != len(set(run_ids)):
+        raise VerificationFailure
+    try:
+        parsed = tuple(uuid.UUID(run_id) for run_id in run_ids)
+    except (ValueError, AttributeError) as error:
+        raise VerificationFailure from error
+    if any(
+        value.version != 4 or str(value) != run_id
+        for value, run_id in zip(parsed, run_ids, strict=True)
+    ):
+        raise VerificationFailure
+
+
+def _assert_exact_success_events(
+    events: Sequence[dict[str, object]], *, count: int
+) -> None:
+    if count not in {4, 12} or len(events) != count:
+        raise VerificationFailure
+    if [event.get("sequence") for event in events] != list(range(count)):
+        raise VerificationFailure
+    summaries = [
+        (event.get("event_type"), event.get("outcome"), event.get("summary"))
+        for event in events
+    ]
+    if summaries != list(_SUCCESS_EVENT_SEQUENCE[:count]):
+        raise VerificationFailure
+
+
 def _load_canonical_json_result(result: CommandResult) -> dict[str, object]:
     successful = _require_success(result, environment_sensitive=False)
     if successful.stderr or not successful.stdout.endswith(b"\n"):
@@ -961,6 +1246,32 @@ def _cleanup_owner(
         raise primary_error
     if cleanup_error is not None:
         raise cleanup_error
+
+
+def _cleanup_registered_owners(
+    owners: list[tuple[subprocess.Popen[bytes], str]],
+    executable: Path,
+    *,
+    workspace: Path,
+    environment: Mapping[str, str],
+) -> BaseException | None:
+    first_error: BaseException | None = None
+    for owner, session in reversed(tuple(owners)):
+        try:
+            _cleanup_owner(
+                owner,
+                executable,
+                session=session,
+                workspace=workspace,
+                environment=environment,
+            )
+        except BaseException as error:
+            if first_error is None:
+                first_error = error
+        finally:
+            if owner.poll() is not None:
+                owners.remove((owner, session))
+    return first_error
 
 
 def _verify_runtime_runner_contract(

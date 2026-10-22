@@ -40,12 +40,17 @@ The verifier performs all of the following in task-owned temporary roots:
 8. stops and finalizes the run, then validates terminal events and watermark;
 9. starts and finalizes a second session against the same durable history;
 10. validates text/JSON equivalence, cursor and limit behavior;
-11. explicitly prunes the older finalized run with `--keep 1`; and
-12. removes every task-owned process, socket, session, database, WAL, SHM,
+11. starts two additional foreground owners concurrently against the same
+    history root;
+12. explicitly prunes the older finalized run with `--keep 1` while preserving
+    both active runs and their committed event prefixes;
+13. stops each concurrent owner independently, proving that the other remains
+    responsive and that both runs finalize exactly once; and
+14. removes every task-owned process, socket, session, database, WAL, SHM,
     lock, initialization file, virtual environment, build output, and external
     driver scaffold.
 
-Success output is exact and concise:
+The existing RTO-3 success output remains the exact prefix:
 
 ```text
 wheel=hiyelx-0.2.0a1-py3-none-any.whl
@@ -59,8 +64,39 @@ history-artifact-cleanup=passed
 clean-install=passed
 ```
 
-A marker is printed only after the complete journey and final temporary-root
-cleanup succeed. A partial failure prints no success marker.
+A successful local B1 verifier run appends these markers in accepted-registry
+order:
+
+```text
+rto4-wheel-built=passed
+rto4-source-isolation=passed
+rto4-env=passed
+rto4-events=passed
+rto4-prune=passed
+rto4-multi=passed
+```
+
+The B1 extension reuses the same verifier, the same single wheel build, the
+same clean non-editable environment, and the same task-owned durable history
+root. It proves wheel/source isolation, the existing events journey, two
+concurrent sessions, active-run-safe explicit prune, independent stop,
+exactly-once finalization, and both control-session cleanups. It does not build
+a second wheel or create a second verifier or virtual environment.
+
+Every existing and B1 marker is printed by `main()` only after the complete
+journey and final temporary-root cleanup succeed. A partial failure prints no
+success marker. A successful local verifier run produces local B1 evidence
+only. The presence of the code or markers in a repository does not by itself
+establish integration or hosted acceptance. Integrated evidence must identify
+the exact commit SHA. Hosted Ubuntu and GitHub-hosted macOS Intel/x86_64
+evidence exists only when the required jobs pass against that exact SHA.
+
+B1 does not emit `rto4-interrupt=passed`, `rto4-crash=passed`,
+`rto4-negative=passed`, `rto4-sanitize=passed`, `rto4-cleanup=passed`, or
+`rto4-automated-acceptance=passed`; those belong to later RTO-4 Slice B
+acceptance work. The six B1 markers do not establish overall automated RTO-4
+acceptance, founder black-box acceptance, physical acceptance, release
+authorization, a tag, or package publication.
 
 ## Manual clean-wheel setup
 
@@ -171,6 +207,12 @@ Prune prints `deleted-runs=1`. The newest finalized run and its events remain;
 the removed run returns the fixed run-not-found result for both `runs show` and
 `events`. Prune does not promise immediate SQLite file-size reduction because
 it does not run `VACUUM`.
+
+The B1 verifier additionally runs this prune while two more owners are active.
+Both incomplete runs, their `0..3` event prefixes, and the newest finalized run
+remain queryable; only the oldest finalized run is deleted. The owners remain
+responsive, are stopped one at a time, and finish with exact `0..11` event
+sequences without one session affecting the other.
 
 ## Cleanup
 

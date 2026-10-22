@@ -95,6 +95,8 @@ class FakeRunner:
 
 _RUN_ONE = "10000000-0000-4000-8000-000000000001"
 _RUN_TWO = "20000000-0000-4000-8000-000000000002"
+_RUN_THREE = "30000000-0000-4000-8000-000000000003"
+_RUN_FOUR = "40000000-0000-4000-8000-000000000004"
 
 
 def _canonical(document: object) -> verify.CommandResult:
@@ -114,6 +116,7 @@ def _run_document(
     session: str,
     result: str | None,
     high_water_mark: int,
+    started_at: str = "2026-10-19T10:00:00.000000Z",
 ) -> dict[str, object]:
     return {
         "ended_at": None if result is None else "2026-10-19T10:00:01.000000Z",
@@ -121,6 +124,7 @@ def _run_document(
         "result": result,
         "run_id": run_id,
         "session_id": session,
+        "started_at": started_at,
         "stop_reason": None if result is None else "cli_stop",
     }
 
@@ -427,7 +431,28 @@ def test_success_markers_are_emitted_in_contract_order(
         "wheel=hiyelx-0.2.0a1-py3-none-any.whl",
         *verify.HISTORY_SUCCESS_MARKERS,
         "clean-install=passed",
+        *verify.RTO4_B1_SUCCESS_MARKERS,
     ]
+    assert len(verify.RTO4_B1_SUCCESS_MARKERS) == len(
+        set(verify.RTO4_B1_SUCCESS_MARKERS)
+    )
+    assert verify.RTO4_B1_SUCCESS_MARKERS == (
+        "rto4-wheel-built=passed",
+        "rto4-source-isolation=passed",
+        "rto4-env=passed",
+        "rto4-events=passed",
+        "rto4-prune=passed",
+        "rto4-multi=passed",
+    )
+    forbidden = (
+        "rto4-interrupt=passed",
+        "rto4-crash=passed",
+        "rto4-negative=passed",
+        "rto4-sanitize=passed",
+        "rto4-cleanup=passed",
+        "rto4-automated-acceptance=passed",
+    )
+    assert not any(marker in captured.out for marker in forbidden)
 
 
 def test_partial_failure_emits_no_success_marker(
@@ -443,6 +468,7 @@ def test_partial_failure_emits_no_success_marker(
     assert captured.out == ""
     assert captured.err == "error: clean-install verification failed\n"
     assert not any(marker in captured.err for marker in verify.HISTORY_SUCCESS_MARKERS)
+    assert not any(marker in captured.err for marker in verify.RTO4_B1_SUCCESS_MARKERS)
 
 
 def test_temporary_workspace_is_removed_after_success(tmp_path: Path) -> None:
@@ -668,6 +694,158 @@ def test_prune_keep_one_and_unknown_removed_run_contract(
     )
 
 
+def test_b1_active_safe_prune_preserves_two_incomplete_runs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    retained = _run_document(
+        _RUN_TWO,
+        session=verify.SECOND_RUNTIME_SESSION,
+        result="completed",
+        high_water_mark=11,
+    )
+    third = _run_document(
+        _RUN_THREE,
+        session=verify.THIRD_RUNTIME_SESSION,
+        result=None,
+        high_water_mark=3,
+        started_at="2026-10-19T10:00:02.000000Z",
+    )
+    fourth = _run_document(
+        _RUN_FOUR,
+        session=verify.FOURTH_RUNTIME_SESSION,
+        result=None,
+        high_water_mark=3,
+        started_at="2026-10-19T10:00:03.000000Z",
+    )
+    finalized_events = _event_documents(_RUN_TWO)
+    third_events = _event_documents(_RUN_THREE)[:4]
+    fourth_events = _event_documents(_RUN_FOUR)[:4]
+    listing = _canonical({"run_count": 3, "runs": [fourth, third, retained]})
+    third_status = verify.EXPECTED_RUNTIME_STATUS.replace(
+        b"session=clean-install\n",
+        f"session={verify.THIRD_RUNTIME_SESSION}\n".encode(),
+        1,
+    )
+    fourth_status = verify.EXPECTED_RUNTIME_STATUS.replace(
+        b"session=clean-install\n",
+        f"session={verify.FOURTH_RUNTIME_SESSION}\n".encode(),
+        1,
+    )
+    _script_results(
+        monkeypatch,
+        (
+            verify.CommandResult(0, b"deleted-runs=1\n", b""),
+            verify.CommandResult(11, b"", b"error: runtime run is not found\n"),
+            verify.CommandResult(11, b"", b"error: runtime run is not found\n"),
+            _canonical(retained),
+            _event_page(_RUN_TWO, finalized_events),
+            listing,
+            verify.CommandResult(0, third_status, b""),
+            listing,
+            _canonical(third),
+            _event_page(_RUN_THREE, third_events),
+            verify.CommandResult(0, fourth_status, b""),
+            listing,
+            _canonical(fourth),
+            _event_page(_RUN_FOUR, fourth_events),
+        ),
+    )
+
+    verify._verify_b1_active_safe_prune(  # pyright: ignore[reportPrivateUsage]
+        tmp_path / "hiyelx",
+        removed_run=_RUN_ONE,
+        retained_finalized_run=_RUN_TWO,
+        retained_finalized_events=finalized_events,
+        active_runs=(
+            (verify.THIRD_RUNTIME_SESSION, _RUN_THREE),
+            (verify.FOURTH_RUNTIME_SESSION, _RUN_FOUR),
+        ),
+        workspace=tmp_path,
+        environment={},
+    )
+
+
+def test_b1_final_history_requires_deterministic_order_and_once_finalization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    second = _run_document(
+        _RUN_TWO,
+        session=verify.SECOND_RUNTIME_SESSION,
+        result="completed",
+        high_water_mark=11,
+    )
+    third = _run_document(
+        _RUN_THREE,
+        session=verify.THIRD_RUNTIME_SESSION,
+        result="completed",
+        high_water_mark=11,
+        started_at="2026-10-19T10:00:02.000000Z",
+    )
+    fourth = _run_document(
+        _RUN_FOUR,
+        session=verify.FOURTH_RUNTIME_SESSION,
+        result="completed",
+        high_water_mark=11,
+        started_at="2026-10-19T10:00:03.000000Z",
+    )
+    _script_results(
+        monkeypatch,
+        (_canonical({"run_count": 3, "runs": [fourth, third, second]}),),
+    )
+    verify._verify_b1_final_history(  # pyright: ignore[reportPrivateUsage]
+        tmp_path / "hiyelx",
+        removed_run=_RUN_ONE,
+        retained_runs=(_RUN_TWO, _RUN_THREE, _RUN_FOUR),
+        workspace=tmp_path,
+        environment={},
+    )
+
+    with pytest.raises(verify.VerificationFailure):
+        verify._assert_distinct_canonical_run_ids(  # pyright: ignore[reportPrivateUsage]
+            (_RUN_ONE, _RUN_ONE)
+        )
+
+
+def test_b1_final_history_rejects_noncanonical_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    second = _run_document(
+        _RUN_TWO,
+        session=verify.SECOND_RUNTIME_SESSION,
+        result="completed",
+        high_water_mark=11,
+    )
+    third = _run_document(
+        _RUN_THREE,
+        session=verify.THIRD_RUNTIME_SESSION,
+        result="completed",
+        high_water_mark=11,
+        started_at="2026-10-19T10:00:02.000000Z",
+    )
+    fourth = _run_document(
+        _RUN_FOUR,
+        session=verify.FOURTH_RUNTIME_SESSION,
+        result="completed",
+        high_water_mark=11,
+        started_at="2026-10-19T10:00:03.000000Z",
+    )
+    _script_results(
+        monkeypatch,
+        (_canonical({"run_count": 3, "runs": [second, third, fourth]}),),
+    )
+    with pytest.raises(verify.VerificationFailure):
+        verify._verify_b1_final_history(  # pyright: ignore[reportPrivateUsage]
+            tmp_path / "hiyelx",
+            removed_run=_RUN_ONE,
+            retained_runs=(_RUN_TWO, _RUN_THREE, _RUN_FOUR),
+            workspace=tmp_path,
+            environment={},
+        )
+
+
 def test_query_prune_and_json_failures_are_rejected_without_raw_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -830,6 +1008,29 @@ def test_platform_short_control_path_boundary() -> None:
             too_long,
             verify.RUNTIME_SESSION,
         )
+
+
+def test_b1_state_prefix_prevents_macos_socket_budget_regression() -> None:
+    deterministic_suffix = "12345678"
+    boundary_parent = Path(os.sep) / ("x" * 58)
+    current_state_root = boundary_parent / (
+        f"{verify._RUNTIME_STATE_DIRECTORY_PREFIX}{deterministic_suffix}"  # pyright: ignore[reportPrivateUsage]
+    )
+    current_socket = (
+        current_state_root / verify.FOURTH_RUNTIME_SESSION / "control.sock"
+    )
+    legacy_state_root = boundary_parent / f"hxctl-{deterministic_suffix}"
+    legacy_socket = (
+        legacy_state_root / verify.FOURTH_RUNTIME_SESSION / "control.sock"
+    )
+
+    assert verify._RUNTIME_STATE_DIRECTORY_PREFIX == "hx-"  # pyright: ignore[reportPrivateUsage]
+    assert len(os.fsencode(current_socket)) == verify._MAX_UNIX_SOCKET_PATH_BYTES  # pyright: ignore[reportPrivateUsage]
+    verify._assert_short_control_path(  # pyright: ignore[reportPrivateUsage]
+        current_state_root,
+        verify.FOURTH_RUNTIME_SESSION,
+    )
+    assert len(os.fsencode(legacy_socket)) > verify._MAX_UNIX_SOCKET_PATH_BYTES  # pyright: ignore[reportPrivateUsage]
 
 
 @pytest.mark.parametrize("line_count", (1, 2))
@@ -1014,6 +1215,62 @@ def test_cleanup_stop_timeout_uses_bounded_kill_fallback(
     )
     assert time.monotonic() - started < 1.0
     assert owner.poll() is not None
+
+
+def test_b1_cleanup_attempts_both_owners_when_one_cleanup_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(verify, "_CLEANUP_TIMEOUT_SECONDS", 0.1)
+    third_owner = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    fourth_owner = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    owners = [
+        (third_owner, verify.THIRD_RUNTIME_SESSION),
+        (fourth_owner, verify.FOURTH_RUNTIME_SESSION),
+    ]
+    real_cleanup = verify._cleanup_owner  # pyright: ignore[reportPrivateUsage]
+    attempted: list[str] = []
+
+    def cleanup_then_fail(
+        owner: subprocess.Popen[bytes],
+        executable: Path,
+        *,
+        session: str,
+        workspace: Path,
+        environment: Mapping[str, str],
+    ) -> None:
+        attempted.append(session)
+        real_cleanup(
+            owner,
+            executable,
+            session=session,
+            workspace=workspace,
+            environment=environment,
+        )
+        if session == verify.FOURTH_RUNTIME_SESSION:
+            raise verify.VerificationFailure
+
+    monkeypatch.setattr(verify, "_cleanup_owner", cleanup_then_fail)
+    cleanup_error = verify._cleanup_registered_owners(  # pyright: ignore[reportPrivateUsage]
+        owners,
+        tmp_path / "hiyelx",
+        workspace=tmp_path,
+        environment=dict(os.environ),
+    )
+
+    assert isinstance(cleanup_error, verify.VerificationFailure)
+    assert attempted == [verify.FOURTH_RUNTIME_SESSION, verify.THIRD_RUNTIME_SESSION]
+    assert third_owner.poll() is not None
+    assert fourth_owner.poll() is not None
+    assert owners == []
 
 
 @pytest.mark.parametrize("abort_type", (KeyboardInterrupt, SystemExit))
