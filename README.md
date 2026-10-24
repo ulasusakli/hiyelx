@@ -4,7 +4,7 @@ HIYELX is a hardware-independent robotics software platform for building, runnin
 
 ## Current stage
 
-**PRE-SEED — Runtime Operations Alpha, RTO-3 complete; RTO-4 next**
+**PRE-SEED — Runtime Operations Alpha, RTO-1 through RTO-4 complete**
 
 The bounded [`v0.1.0` Software Developer Preview](https://github.com/ulasusakli/hiyelx/releases/tag/v0.1.0)
 was published as a GitHub pre-release from commit
@@ -127,9 +127,9 @@ It provides immutable deterministic snapshots of one local Runtime Manager,
 ordered resource lifecycle and health state, startup ownership, and structured
 instance-local events.
 
-RTO-2 Local Runtime Process Control and RTO-3 Local Events, Run History, and
-Explicit Retention are complete on current `main`. Start the canonical
-simulation runtime in one terminal:
+RTO-2 Local Runtime Process Control, RTO-3 Local Events, Run History, and
+Explicit Retention, and RTO-4 Runtime Operations Alpha Acceptance are complete
+on current `main`. Start the canonical simulation runtime in one terminal:
 
 ```bash
 hiyelx runtime start examples/configs/sim-motor.yaml --session local-sim
@@ -173,7 +173,8 @@ repair, crash classification, or background service. See the
 contract for storage ownership, query/prune ordering, failure precedence,
 cleanup, and exit codes.
 
-Verify the complete non-editable installed-wheel RTO-3 journey with:
+Verify the complete non-editable installed-wheel Runtime Operations Alpha
+journey with:
 
 ```bash
 uv run python scripts/verify_clean_install.py
@@ -194,17 +195,40 @@ tested that exact portability commit and passed both hosted jobs:
   on Intel/x86_64; all 296 focused tests, the clean installed-wheel RTO-3
   journey, and artifact cleanup passed.
 
-No hosted ARM64/Apple Silicon passing evidence was produced. Two earlier ARM64
-runner-capacity attempts received no runner and executed no test steps; they
-were infrastructure-capacity blockers rather than product or test failures,
-but they are not passing evidence. ARM64 is not mandatory in the current RTO-3
-acceptance contract.
+RTO-4 adds no production runtime behavior or public API. It closes
+software/runtime acceptance for the integrated RTO-1 through RTO-3 behavior
+through installed-wheel automation, hosted portability, and one founder
+black-box session. The automated matrix was integrated at
+`f4284c01dda9a35aec38979a356ffb6b9c02067b`. Quality gate
+[`40067721268`](https://github.com/ulasusakli/hiyelx/actions/runs/40067721268)
+tested that exact SHA:
 
-RTO-3 technical software/runtime acceptance is complete. RTO-4 Runtime
-Operations Alpha Acceptance is next but has not started or been accepted. This
-closure does not change package version `0.2.0a1`, create a tag, release, or
-package publication, or provide Physical Hardware Proof. Physical hardware
-acceptance remains a separate pending track.
+- Ubuntu job `120794370547` passed Ruff, strict Pyright, `647 passed, 1`
+  physical XL430 test explicitly skipped, and the exact 21-line installed-wheel
+  result with all 12 RTO-4 markers ending
+  `rto4-automated-acceptance=passed`.
+- GitHub-hosted macOS job `120794370479` used `macos-15-intel` on Intel/x86_64
+  and passed 322 focused tests plus the same exact 21-line installed-wheel
+  result and 12-marker registry.
+
+The founder black-box evidence was integrated at
+`2538398437b2438f20c6d78b6d9369221696581f`. Quality gate
+[`40086361304`](https://github.com/ulasusakli/hiyelx/actions/runs/40086361304)
+passed Ubuntu job `120850006494` and macOS Intel job `120850006684` on that
+exact SHA. The founder completed `8/8` steps in `00:06:30` with zero assistance
+requests, blockers, unexpected leaks, live-process leftovers, or task-owned
+artifact leftovers and recorded `ACCEPT`. See the
+[`RTO-4 founder acceptance evidence`](docs/evidence/2026-10-24-rto4-founder-acceptance.md).
+
+The founder session ran locally on macOS/ARM64; it is founder evidence, not
+hosted ARM64 portability acceptance. No hosted ARM64/Apple Silicon passing
+evidence was produced or required. Runtime Operations Alpha RTO-1 through
+RTO-4 is complete in the software/runtime acceptance scope, and
+Simulation/Preview Alpha is the next product milestone.
+
+This closure does not change package version `0.2.0a1`, create a `v0.2.0a1`
+tag, GitHub release, package-registry publication, or provide Physical Hardware
+Proof. Physical XL430 acceptance remains a separate pending track.
 
 ## Pre-seed scope
 

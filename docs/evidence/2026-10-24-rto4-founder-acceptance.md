@@ -4,10 +4,12 @@
 
 - Gate: `RTO4-FOUNDER-01` / RTO-4 Slice C
 - Result: `PASS`
+- Status: `ACCEPTED / INTEGRATED`
 - Founder decision: `ACCEPT`
 - Acceptance date: `2026-10-24`
 - Participant: founder / product owner
 - Candidate revision: `f4284c01dda9a35aec38979a356ffb6b9c02067b`
+- Evidence integration revision: `2538398437b2438f20c6d78b6d9369221696581f`
 - Wheel: `hiyelx-0.2.0a1-py3-none-any.whl`
 - Wheel SHA-256: `37389fa3d1a22fde7da1544e2c43ef1394b0a5a1347d08d2adc6d597a0b2a705`
 - Assistance requests after command-sheet handoff: `0`
@@ -74,6 +76,23 @@ rto4-sanitize=passed
 rto4-cleanup=passed
 rto4-automated-acceptance=passed
 ```
+
+## Slice C evidence integration
+
+This sanitized founder evidence was integrated at
+`2538398437b2438f20c6d78b6d9369221696581f`. Quality gate
+[`40086361304`](https://github.com/ulasusakli/hiyelx/actions/runs/40086361304)
+tested that exact SHA and passed both hosted jobs:
+
+| Surface | Job | Result |
+|---|---:|---|
+| Ubuntu quality and installed wheel | `120850006494` | Ruff and strict Pyright passed; pytest reported `647 passed, 1 physical skipped`; exact 21-line installed-wheel result and all `12/12` RTO-4 markers passed |
+| macOS Intel portability and installed wheel | `120850006684` | GitHub-hosted `macos-15-intel` passed 322 focused tests; exact 21-line installed-wheel result and all `12/12` RTO-4 markers passed |
+
+The cleanup markers and final `rto4-automated-acceptance=passed` marker were
+present in both jobs. This hosted result accepts the integrated Slice C evidence
+record; it does not convert the founder's local macOS/ARM64 session into hosted
+ARM64 portability evidence.
 
 ## Founder journey
 
@@ -173,10 +192,13 @@ The founder explicitly rejected interpreting this session as evidence of:
 
 ## Scope boundary
 
-This evidence passes the RTO-4 founder black-box gate for the candidate
-revision. Overall `RTO-4 ACCEPTED: YES` still requires this record to be
-integrated and the separately authorized Slice D evidence/status closure to
-pass with clean local, origin, and live-main reconciliation.
+This evidence passes the RTO-4 founder black-box gate and is accepted and
+integrated as Slice C at
+`2538398437b2438f20c6d78b6d9369221696581f`. The synchronized six-document
+Slice D closure set supplies the evidence/status reconciliation required for
+overall RTO-4 acceptance without changing runtime behavior or public APIs.
+This record remains founder evidence only; automated acceptance and closure
+status retain their separate evidence layers.
 
 No serial enumeration, hardware discovery, transport opening, actuator or
 motor power, torque, movement, cloud service, tag, release, or publication

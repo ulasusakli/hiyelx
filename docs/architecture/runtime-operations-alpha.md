@@ -1,4 +1,4 @@
-# Runtime Operations Alpha: RTO-1 through RTO-3
+# Runtime Operations Alpha: RTO-1 through RTO-4
 
 ## Purpose
 
@@ -7,6 +7,11 @@ Runs, Health, Trigger, Job, Simulation/Preview, and Studio interfaces. It turns
 the existing local Runtime Manager state into deterministic, immutable,
 sanitized value objects without creating a GUI, network API, database, or
 background worker.
+
+RTO-4 adds no production runtime behavior or public API. It closes acceptance
+for the integrated RTO-1 through RTO-3 behavior through an installed-wheel
+automated matrix, hosted Ubuntu and macOS Intel/x86_64 portability, founder
+black-box evidence, and synchronized closure documentation.
 
 This is a software operations contract. It does not provide physical evidence,
 an emergency stop, hard real-time behavior, or certified functional safety.
@@ -350,7 +355,7 @@ can modify that private directory. It also makes no durability claim beyond
 SQLite `synchronous=FULL`, atomic initialization/publish, file and directory
 fsync, and successfully committed transactions.
 
-## RTO-3 limitations and next capabilities
+## Runtime Operations Alpha closure and next capability
 
 RTO-2 remains a foreground, single-host, current-user control session. RTO-3
 adds local persistence but no daemon, service installation, detached mode,
@@ -379,8 +384,36 @@ current RTO-3 acceptance contract. Two earlier ARM64 runner-capacity attempts
 received no runner and executed no test steps; they are infrastructure-capacity
 blockers rather than product/test failures, and they are not passing evidence.
 
-This closes only RTO-3 technical software/runtime acceptance. Package version
-remains `0.2.0a1`; no new tag, release, or package publication was created.
-RTO-4 Runtime Operations Alpha Acceptance is next and has not started or been
-accepted. Physical hardware acceptance and Physical Hardware Proof remain a
-deferred parallel track and cannot be inferred from this software evidence.
+RTO-4 automated acceptance was integrated at
+`f4284c01dda9a35aec38979a356ffb6b9c02067b`. Quality gate
+[`40067721268`](https://github.com/ulasusakli/hiyelx/actions/runs/40067721268)
+passed Ubuntu job `120794370547` with `647 passed, 1 physical skipped` and
+macOS Intel job `120794370479` with `322 passed`. Both jobs produced the exact
+21-line installed-wheel result, all `12/12` RTO-4 markers, cleanup evidence,
+and final `rto4-automated-acceptance=passed`.
+
+The founder black-box evidence was integrated at
+`2538398437b2438f20c6d78b6d9369221696581f`. Quality gate
+[`40086361304`](https://github.com/ulasusakli/hiyelx/actions/runs/40086361304)
+passed Ubuntu job `120850006494` and macOS Intel job `120850006684` on that
+exact SHA. The founder completed `8/8` public installed-wheel steps in
+`00:06:30`, with zero assistance requests, blockers, unexpected leaks,
+live-process leftovers, or task-owned artifact leftovers, and recorded
+`ACCEPT`. The sanitized record is the
+[`RTO-4 founder acceptance evidence`](../evidence/2026-10-24-rto4-founder-acceptance.md),
+and the frozen acceptance boundary is the
+[`RTO-4 acceptance contract`](runtime-operations-alpha-acceptance.md).
+
+Runtime Operations Alpha RTO-1 through RTO-4 is complete in the
+software/runtime acceptance scope. Ephemeral current-user control remains
+separate from durable current-user history; normal runtime stop preserves
+history until explicit prune. The runtime remains foreground-owned,
+simulation-only, Unix-socket local, and independent of cloud or another
+control plane. Simulation/Preview Alpha is the next product capability.
+
+The founder session ran locally on macOS/ARM64 and is not hosted ARM64
+portability evidence. Package version remains `0.2.0a1`; no new tag, release,
+or package publication was created. No serial enumeration, hardware discovery,
+transport opening, torque, or movement occurred. Physical hardware acceptance,
+hard-real-time behavior, certified functional safety, and Physical Hardware
+Proof remain outside this software evidence and on a deferred parallel track.

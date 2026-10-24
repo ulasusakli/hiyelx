@@ -23,7 +23,7 @@ DEFERRED without treating it as complete:
 
 ### NOW
 
-**Runtime Operations Alpha — RTO-3 complete; RTO-4 next**
+**Runtime Operations Alpha — RTO-1 through RTO-4 complete**
 
 The published `v0.1.0` Software Developer Preview remains the bounded release
 snapshot at commit `e3801ed43ec4b173dae765ac583055314defce50`. Current `main`
@@ -32,13 +32,11 @@ contains later Module/Driver SDK Alpha software evidence under package identity
 published to a package registry. A possible future `v0.2.0a1` tag and release
 require separate authorization; stable `0.2.0` remains reserved.
 
-RTO-1 and RTO-2 are done. RTO-3 Slice A, Slice B, Slice C1, and Slice C2 are
-integrated and accepted on `main`; together they provide the secure local
-SQLite run ledger, sanitized event persistence and queries, explicit
-finalized-run pruning, and the verified full journey from a clean non-editable
-wheel. C2 was integrated at
-`c40a66d4360272070403d14b9341ad95c455ad07`; CI runner portability was
-integrated at `7c402a4be4468d3e9501a8035c8df5a7d285676f`.
+RTO-1 through RTO-3 are implemented and accepted. RTO-4 adds no production
+runtime behavior or public API; it closes software/runtime acceptance for that
+integrated behavior through a clean installed-wheel matrix, hosted Ubuntu and
+macOS Intel portability, founder black-box acceptance, and synchronized
+evidence/status documentation.
 
 Evidence state remains deliberately separate:
 
@@ -46,20 +44,32 @@ Evidence state remains deliberately separate:
 - RTO-2 local foreground owner and process control: **DONE**.
 - RTO-3 implementation and technical acceptance gates: **DONE**.
 - RTO-3 Slice C2: **integrated and accepted**.
-- GitHub Quality gate
-  [`39493825893`](https://github.com/ulasusakli/hiyelx/actions/runs/39493825893):
-  **passed** at `7c402a4be4468d3e9501a8035c8df5a7d285676f`.
-- Hosted Ubuntu: **621 passed, 1 physical XL430 test explicitly skipped; clean
-  installed-wheel passed**.
-- Hosted macOS 15 on the standard GitHub-hosted `macos-15-intel` Intel/x86_64
-  runner: **296 focused tests and the clean installed-wheel RTO-3 journey
-  passed, including artifact cleanup**.
-- Hosted ARM64/Apple Silicon acceptance: **not produced and not required by the
-  current RTO-3 contract**. Two earlier ARM64 runner-capacity attempts received
-  no runner and ran no test steps; they were not product/test failures and are
-  not passing evidence.
+- RTO-4 Slice A contract freeze: **integrated and accepted** at
+  `8fffb34a2de94f0a1803996a06a6daf600b5db80`.
+- RTO-4 Slice B automated acceptance: **integrated and hosted-accepted** at
+  `f4284c01dda9a35aec38979a356ffb6b9c02067b`. Quality gate
+  [`40067721268`](https://github.com/ulasusakli/hiyelx/actions/runs/40067721268)
+  passed Ubuntu job `120794370547` with `647 passed, 1 physical skipped` and
+  macOS Intel job `120794370479` with `322 passed`; both produced the exact
+  21-line installed-wheel result, all `12/12` RTO-4 markers, cleanup markers,
+  and final `rto4-automated-acceptance=passed`.
+- RTO-4 Slice C founder acceptance: **PASS / ACCEPT**. The founder completed
+  `8/8` steps in `00:06:30` with zero assistance requests, blockers,
+  unexpected leaks, live-process leftovers, or task-owned artifact leftovers.
+- RTO-4 Slice C evidence: **integrated and hosted-accepted** at
+  `2538398437b2438f20c6d78b6d9369221696581f`. Quality gate
+  [`40086361304`](https://github.com/ulasusakli/hiyelx/actions/runs/40086361304)
+  passed Ubuntu job `120850006494` and macOS Intel job `120850006684` with the
+  same counts, exact 21-line result, and `12/12` marker registry. The sanitized
+  record is
+  [`docs/evidence/2026-10-24-rto4-founder-acceptance.md`](docs/evidence/2026-10-24-rto4-founder-acceptance.md).
+- RTO-4 Slice D evidence and closure synchronization: **DONE in this bounded
+  six-document closure candidate**.
+- RTO-4 Runtime Operations Alpha software/runtime acceptance: **DONE**.
+- Hosted ARM64/Apple Silicon acceptance: **not produced and not required**.
+  The founder's local macOS/ARM64 session is founder evidence, not portability
+  acceptance.
 - Physical HCA-1 proof: **pending on a separate opt-in track**.
-- RTO-4 Runtime Operations Alpha Acceptance: **NEXT; not started or accepted**.
 
 The bounded session protocol and durable history remain local,
 current-user-only, deterministic, and simulation-backed. They add no daemon,
@@ -68,8 +78,7 @@ hardware access.
 
 ### NEXT
 
-1. RTO-4 Runtime Operations Alpha Acceptance.
-2. Simulation/Preview Alpha.
+1. Simulation/Preview Alpha.
 
 ### DONE
 
@@ -171,6 +180,13 @@ hardware access.
   `7c402a4be4468d3e9501a8035c8df5a7d285676f`. This closes RTO-3 technical
   software/runtime acceptance only; it does not close physical acceptance,
   publish package `0.2.0a1`, or create a `v0.2.0a1` tag or release.
+- RTO-4 Slices A–D are complete in this closure candidate. Slice A froze the
+  accepted contract; Slice B integrated and hosted-accepted the exact
+  installed-wheel automated matrix; Slice C recorded and integrated the
+  founder's `ACCEPT`; Slice D synchronizes the six authorized evidence/status
+  documents. RTO-4 closes Runtime Operations Alpha software/runtime acceptance
+  only. It creates no runtime feature, package-version change, tag, release,
+  registry publication, hosted ARM64 acceptance, or physical-hardware claim.
 
 ### PARALLEL / DEFERRED
 

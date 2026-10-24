@@ -3,9 +3,9 @@
 ## Purpose
 
 This index separates the historical `v0.1.0` Software Developer Preview release
-evidence from later Module/Driver SDK Alpha evidence on `main`, external human
-usability evidence, and deferred physical evidence. It does not replace test
-results or grant physical acceptance.
+evidence from later Module/Driver SDK Alpha and Runtime Operations Alpha
+evidence on `main`, external human usability evidence, and deferred physical
+evidence. It does not replace test results or grant physical acceptance.
 
 The GitHub pre-release
 [`v0.1.0`](https://github.com/ulasusakli/hiyelx/releases/tag/v0.1.0) targets
@@ -59,6 +59,45 @@ HCA-VERSION-1 selected `0.2.0a1` as the active package identity for current
 `0.1.0` and pins `hiyelx==0.2.0a1`. A possible future `v0.2.0a1` tag has not
 been created, and there is no new GitHub release or registry publication.
 Stable `0.2.0` remains reserved for a later acceptance decision.
+
+## Runtime Operations Alpha evidence on current `main`
+
+Runtime Operations Alpha RTO-1 through RTO-4 is complete in the
+software/runtime acceptance scope on current `main`. This work was integrated
+after the `v0.1.0` release snapshot and is not part of that release.
+
+| Capability | Status | Architecture or contract | Integration and verification evidence |
+|---|---|---|---|
+| RTO-1 Runtime Operations State Model | Complete | [`runtime-operations-alpha.md`](../architecture/runtime-operations-alpha.md) | Integrated at `bee98b6c48725db2e9311b30fcf8f00126f6061e`; immutable sanitized snapshots and ordered instance-local events |
+| RTO-2 Local Runtime Process Control | Complete | [`runtime-operations-alpha.md`](../architecture/runtime-operations-alpha.md) | Foreground simulation owner, private current-user Unix socket, cross-process status/stop, and deterministic owned cleanup |
+| RTO-3 Local Events, Run History, and Explicit Retention | Complete | [`runtime-operations-alpha.md`](../architecture/runtime-operations-alpha.md) | Slices A–C2 integrated; runner-portability evidence at `7c402a4be4468d3e9501a8035c8df5a7d285676f` and Quality gate [`39493825893`](https://github.com/ulasusakli/hiyelx/actions/runs/39493825893) |
+| RTO-4 Runtime Operations Alpha Acceptance | Complete in the synchronized closure candidate | [`runtime-operations-alpha-acceptance.md`](../architecture/runtime-operations-alpha-acceptance.md) | Automated acceptance integrated at `f4284c01dda9a35aec38979a356ffb6b9c02067b`; founder evidence integrated at `2538398437b2438f20c6d78b6d9369221696581f`; sanitized [`founder evidence record`](2026-10-24-rto4-founder-acceptance.md) |
+
+The authoritative installed-wheel procedure remains the
+[`clean-install runbook`](../development/clean-install-and-demo.md). RTO-4
+automated acceptance at
+[`40067721268`](https://github.com/ulasusakli/hiyelx/actions/runs/40067721268)
+passed Ubuntu job `120794370547` with `647 passed, 1 physical skipped` and
+macOS Intel job `120794370479` with `322 passed`. Both jobs produced the exact
+21-line installed-wheel result, all `12/12` RTO-4 markers, cleanup markers, and
+final `rto4-automated-acceptance=passed`.
+
+The founder evidence integration Quality gate
+[`40086361304`](https://github.com/ulasusakli/hiyelx/actions/runs/40086361304)
+passed Ubuntu job `120850006494` and macOS Intel job `120850006684` on exact
+revision `2538398437b2438f20c6d78b6d9369221696581f`, repeating the same test
+counts, exact 21-line result, and `12/12` marker registry. The founder completed
+`8/8` steps in `00:06:30` with zero assistance requests, blockers, unexpected
+leaks, live-process leftovers, or task-owned artifact leftovers and recorded
+`ACCEPT`.
+
+RTO-4 adds no runtime feature or public API. The founder's local macOS/ARM64
+session is not hosted ARM64 portability evidence. Package identity remains
+`0.2.0a1`; no `v0.2.0a1` tag, GitHub release, or registry publication exists.
+No physical XL430 acceptance, serial/device discovery, transport opening,
+torque, movement, hard-real-time behavior, or certified functional-safety
+claim follows from this evidence. Runtime operation remains local-first and
+requires no cloud or control plane.
 
 ## External developer evidence
 

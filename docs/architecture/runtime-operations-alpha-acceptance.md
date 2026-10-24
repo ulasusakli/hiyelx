@@ -1,42 +1,48 @@
 # RTO-4 Runtime Operations Alpha Acceptance Contract
 
-> - **Status:** Accepted / Frozen — RTO-4 Slice A
+> - **Status:** Closure candidate — RTO-4 accepted
 > - **Founder approval:** `APPROVE RTO-4 CONTRACT DEFAULTS`
 > - **Approval date:** `2026-10-22`
 > - **Evidence baseline:** `439c3525adb66b880d57590e33f3c2c6837b1883`
+> - **Automated acceptance:** `f4284c01dda9a35aec38979a356ffb6b9c02067b`
+> - **Founder evidence integration:** `2538398437b2438f20c6d78b6d9369221696581f`
+> - **Slice D closure sync:** this synchronized six-document candidate
 > - **Package version:** `0.2.0a1`
 >
-> This approval accepts and freezes the contract only. It does not start RTO-4
-> acceptance execution or accept RTO-4 overall.
+> The seven founder decisions and the accepted contract remain frozen. The
+> status metadata records the later Slice B automated, Slice C founder, and
+> Slice D closure outcomes without changing the contract or runtime behavior.
 
 Normative words such as **must** and **must not** describe the accepted exit
-contract. They do not claim that the corresponding RTO-4 evidence exists.
+contract. The closure evidence below records how those requirements were met.
 
 ### Status vocabulary
 
-Slice A integration accepts and freezes the contract, but it does not start
-automated acceptance execution. The target state immediately after an
-authorized and successful Slice A integration is:
+The synchronized Slice D closure candidate records this final state:
 
 ```text
 RTO-4 CONTRACT ACCEPTED: YES
-RTO-4 ACCEPTANCE EXECUTION STARTED: NO
-RTO-4 ACCEPTED: NO
-READY FOR RTO-4 SLICE B: YES
+RTO-4 ACCEPTANCE EXECUTION STARTED: YES
+RTO-4 AUTOMATED ACCEPTANCE: YES
+RTO-4 FOUNDER ACCEPTANCE: YES
+RTO-4 SLICE C EVIDENCE INTEGRATED: YES
+RTO-4 SLICE D CLOSURE SYNC: YES
+RTO-4 ACCEPTED: YES
+PHYSICAL HARDWARE ACCEPTANCE: NO
 ```
 
-The current `README.md` and `PRESEED.md` wording that RTO-4 is next and not
-started is therefore not contradictory while acceptance execution has not
-begun. Only authorized Slice B implementation changes
-`RTO-4 ACCEPTANCE EXECUTION STARTED` to `YES`. Contract acceptance alone does
-not imply automated, founder, or overall RTO-4 acceptance.
+The historical pre-execution state immediately after Slice A had execution not
+started and RTO-4 not accepted. That baseline is preserved as history in
+Section L; it is not the current closure state. Contract acceptance alone did
+not imply later automated, founder, or overall acceptance: those conclusions
+come from the separately integrated evidence below.
 
-## Existing contract and evidence inventory
+## Contract and closure evidence inventory
 
 The contract is derived from the following current sources:
 
-- [`README.md`](../../README.md) and [`PRESEED.md`](../../PRESEED.md) define
-  RTO-1, RTO-2, and RTO-3 as complete, RTO-4 as next and not started, and
+- [`README.md`](../../README.md) and [`PRESEED.md`](../../PRESEED.md) record
+  RTO-1 through RTO-4 as complete in the software/runtime acceptance scope and
   physical acceptance as a separate pending track.
 - [`runtime-operations-alpha.md`](runtime-operations-alpha.md) defines the
   RTO-1 snapshot, RTO-2 foreground-owner/control, and RTO-3 durable-history
@@ -56,7 +62,7 @@ The contract is derived from the following current sources:
 - [`ci.yml`](../../.github/workflows/ci.yml) is the current hosted execution
   surface.
 
-Current evidence answers the inventory questions as follows:
+Closure evidence answers the inventory questions as follows:
 
 1. **Implemented journeys.** RTO-1 supplies immutable sanitized runtime
    snapshots and ordered events. RTO-2 supplies a foreground simulation owner,
@@ -65,37 +71,34 @@ Current evidence answers the inventory questions as follows:
    RTO-3 supplies active and finalized run queries, persisted event pages,
    canonical text/JSON, explicit prune, shared history across processes, and
    fail-closed local-store validation.
-2. **Installed-wheel evidence.** The current verifier builds and installs one
-   non-editable wheel, rejects checkout imports, validates the canonical
-   configuration and demo, checks missing history, starts two sequential
-   owners, queries active/finalized history and events from separate processes,
-   stops each owner, checks text/JSON cursor behavior, prunes one finalized run,
-   and verifies task-owned artifact cleanup.
-3. **Already hosted.** Quality gate
-   [`39493825893`](https://github.com/ulasusakli/hiyelx/actions/runs/39493825893)
-   accepted RTO-3 at `7c402a4be4468d3e9501a8035c8df5a7d285676f`:
-   Ubuntu passed Ruff, Pyright, `621 passed, 1 physical skipped`, and the
-   clean-wheel journey; GitHub-hosted `macos-15-intel` passed 296 focused tests
-   and the clean-wheel journey. Current-main run
-   [`39673811095`](https://github.com/ulasusakli/hiyelx/actions/runs/39673811095)
-   repeated those critical jobs successfully at the baseline SHA above.
-4. **Source-tree-only evidence.** Concurrent multi-session isolation,
-   near-simultaneous finalization, SIGINT finalization, forced-process-death
-   committed-prefix behavior, raw malformed/oversized protocol rejection,
-   unsafe control artifacts, corrupt/schema-mismatched history, bounded
-   database contention, and injected cleanup failures are covered by
-   integration or unit tests but are not all exercised by the installed-wheel
-   verifier.
-5. **Human evidence.** No RTO-4 founder black-box session or sanitized RTO-4
-   evidence record exists. Technical CI success cannot supply that evidence.
-6. **Undefined RTO-4 decisions.** The repository has not yet approved the
-   founder-session requirement, the exact installed-wheel negative set, the
-   verifier reuse strategy, RTO-4 marker names, the evidence-record format, or
-   the final synchronization set.
-7. **Real remaining gap.** Existing tests must retain their present names and
-   provenance. RTO-4 needs only missing acceptance orchestration, installed-wheel
-   coverage for the named gaps, a founder session, and a closure record. It does
-   not need existing RTO-1–RTO-3 behavior relabeled as new functionality.
+2. **Installed-wheel evidence.** The accepted verifier builds and installs one
+   non-editable wheel, rejects checkout imports, and exercises the full RTO-3
+   prefix plus the RTO-4 automated matrix, including multi-session isolation,
+   SIGINT, forced termination/recovery, negative/fault cases, sanitization, and
+   cleanup. Successful output is exactly 21 lines: nine RTO-3 lines followed by
+   the frozen 12-marker RTO-4 registry.
+3. **Automated integration and hosting.** Slice B was integrated at
+   `f4284c01dda9a35aec38979a356ffb6b9c02067b`. Quality gate
+   [`40067721268`](https://github.com/ulasusakli/hiyelx/actions/runs/40067721268)
+   passed Ubuntu job `120794370547` with `647 passed, 1 physical skipped` and
+   macOS Intel job `120794370479` with `322 passed`; both jobs passed the exact
+   21-line output, all `12/12` markers, cleanup, and final aggregate marker.
+4. **Founder acceptance.** The founder completed `8/8` public installed-wheel
+   steps in `00:06:30` with zero assistance requests, blockers, unexpected
+   leaks, live-process leftovers, or task-owned artifact leftovers and recorded
+   `ACCEPT` in the
+   [`founder evidence record`](../evidence/2026-10-24-rto4-founder-acceptance.md).
+5. **Founder evidence integration and hosting.** The sanitized record was
+   integrated at `2538398437b2438f20c6d78b6d9369221696581f`. Quality gate
+   [`40086361304`](https://github.com/ulasusakli/hiyelx/actions/runs/40086361304)
+   passed Ubuntu job `120850006494` and macOS Intel job `120850006684` on that
+   exact SHA with the same counts, exact 21-line result, and `12/12` registry.
+6. **Founder decisions.** The founder-session requirement, installed-wheel
+   negative set, verifier reuse strategy, marker registry, evidence format, and
+   final synchronization set were approved and remain frozen in Section L.
+7. **Closure.** The synchronized Slice D candidate reconciles the accepted
+   automated and founder evidence without adding runtime behavior, changing a
+   public API, or relabeling RTO-1 through RTO-3 implementation as new work.
 
 ## A. Purpose
 
@@ -196,6 +199,11 @@ Rules:
   runner, job/step conclusions, test counts, required markers, and cleanup.
 
 ## E. Acceptance matrix
+
+The matrix below is the frozen pre-execution contract. Its “Existing evidence”
+and “New evidence needed” columns describe the historical baseline and required
+work at contract approval time; the closure outcomes are recorded in the
+inventory above and Section J.
 
 | ID | Journey/claim | Existing evidence | New evidence needed | Execution surface | Expected result | Failure classification | Exit gate |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -424,14 +432,43 @@ RTO-4 may be marked complete only when all gates below are true:
 Any false gate means `RTO-4 ACCEPTED: NO`. Tagging, releasing, or publishing is
 neither required for RTO-4 completion nor automatically authorized by it.
 
+### Slice D closure result
+
+All Section J gates are satisfied in this synchronized closure candidate:
+
+- the accepted contract was integrated at
+  `8fffb34a2de94f0a1803996a06a6daf600b5db80`;
+- the automated verifier/test slice was integrated at
+  `f4284c01dda9a35aec38979a356ffb6b9c02067b` without production-runtime scope
+  expansion;
+- local acceptance and exact-SHA hosted Ubuntu/macOS Intel acceptance passed;
+- Quality gate
+  [`40067721268`](https://github.com/ulasusakli/hiyelx/actions/runs/40067721268)
+  supplied the reviewed automated counts, exact 21-line results, `12/12`
+  markers, and cleanup evidence;
+- the founder black-box session passed with `8/8`, `00:06:30`, all required
+  zero counts, and explicit `ACCEPT`;
+- the sanitized evidence record was integrated at
+  `2538398437b2438f20c6d78b6d9369221696581f` and Quality gate
+  [`40086361304`](https://github.com/ulasusakli/hiyelx/actions/runs/40086361304)
+  passed both required hosted jobs on that exact SHA;
+- the six authorized Slice D documents are synchronized by this candidate; and
+- package, physical, ARM64, release, publication, safety, and local-first
+  boundaries remain unchanged.
+
+Accordingly, the synchronized documentation state is `RTO-4 ACCEPTED: YES`.
+This is software/runtime acceptance only and creates no release or physical
+acceptance authority.
+
 ## K. Accepted work-slice plan
 
-The founder approved this work-slice plan on 2026-10-22. Slice A accepts and
-freezes the contract; RTO-4 acceptance execution has not started, and Slices B,
-C, and D have not started.
+The founder approved this work-slice plan on 2026-10-22. It remains the frozen
+execution plan; the status annotations below record the completed outcome.
 
 ### RTO-4 Slice A — Acceptance Contract Freeze
 
+- **Status:** COMPLETE — integrated at
+  `8fffb34a2de94f0a1803996a06a6daf600b5db80`.
 - **Purpose:** review and integrate only the approved acceptance boundary.
 - **Exact allowed files:**
   `docs/architecture/runtime-operations-alpha-acceptance.md` only.
@@ -450,6 +487,8 @@ C, and D have not started.
 
 ### RTO-4 Slice B — Black-box Acceptance Harness
 
+- **Status:** COMPLETE — automated acceptance integrated and hosted-accepted at
+  `f4284c01dda9a35aec38979a356ffb6b9c02067b`, Quality gate `40067721268`.
 - **Purpose:** produce only the missing acceptance orchestration/evidence for
   existing behavior; add no runtime feature.
 - **Exact allowed file classes:**
@@ -474,19 +513,19 @@ C, and D have not started.
 - **Commit/release boundary:** one acceptance-only commit may be separately
   authorized; no product feature, tag, release, or publication.
 
-The founder-approved default is to reuse and extend the existing
+The founder-approved default was to reuse and extend the existing
 `verify_clean_install.py` orchestration because it already owns clean wheel
 construction, source isolation, deadlines, process cleanup, and canonical
 markers. A second verifier is not justified for the core journey. The exact
-reason Slice B is still needed is that the current verifier does not exercise
-installed-wheel multi-session isolation, SIGINT, forced crash/recovery, or the
-full negative/fault matrix. A separate thin wrapper should be considered only
-if implementation review proves that extending the existing verifier would
-mix incompatible evidence lifecycles; it must reuse the existing wheel and
-cleanup primitives rather than duplicate them.
+historical reason Slice B was needed was that the pre-Slice-B verifier did not
+exercise installed-wheel multi-session isolation, SIGINT, forced
+crash/recovery, or the full negative/fault matrix. Slice B closed those gaps in
+the existing verifier without adding a second verifier or runtime feature.
 
 ### RTO-4 Slice C — Founder Acceptance Session
 
+- **Status:** COMPLETE — founder `ACCEPT`; sanitized evidence integrated at
+  `2538398437b2438f20c6d78b6d9369221696581f`, Quality gate `40086361304`.
 - **Purpose:** execute Section H and record founder-observed black-box evidence.
 - **Exact allowed file classes:** one new sanitized evidence record under
   `docs/evidence/`; no code, tests, verifier, workflow, package, or existing
@@ -504,6 +543,7 @@ cleanup primitives rather than duplicate them.
 
 ### RTO-4 Slice D — Evidence and Closure Sync
 
+- **Status:** COMPLETE in this synchronized six-document closure candidate.
 - **Purpose:** reconcile accepted technical and founder evidence and close
   RTO-4 without changing behavior.
 - **Exact allowed files:** `README.md`, `PRESEED.md`,
@@ -535,7 +575,7 @@ approved defaults are frozen by the recorded decision:
 | 6 | ARM64 / Apple Silicon | **Out of scope and not required.** Do not claim passing evidence. | A future dedicated portability slice may add it. | Approved by founder on 2026-10-22. |
 | 7 | Physical hardware | **Out of scope and separately evidenced.** Keep HCA pending. | Physical execution requires its own explicit-consent task and evidence. | Approved by founder on 2026-10-22. |
 
-After successful Slice A integration:
+Historical pre-execution baseline after successful Slice A integration:
 
 ```text
 RTO-4 CONTRACT ACCEPTED: YES
@@ -555,4 +595,18 @@ APPROVE RTO-4 CONTRACT DEFAULTS
 
 This recorded decision is contract approval only. It is not automated
 acceptance, the founder black-box session, overall RTO-4 acceptance, physical
-acceptance, or release authorization.
+acceptance, or release authorization. Those later conclusions require their
+separate evidence layers.
+
+Current synchronized closure state:
+
+```text
+RTO-4 CONTRACT ACCEPTED: YES
+RTO-4 ACCEPTANCE EXECUTION STARTED: YES
+RTO-4 AUTOMATED ACCEPTANCE: YES
+RTO-4 FOUNDER ACCEPTANCE: YES
+RTO-4 SLICE C EVIDENCE INTEGRATED: YES
+RTO-4 SLICE D CLOSURE SYNC: YES
+RTO-4 ACCEPTED: YES
+PHYSICAL HARDWARE ACCEPTANCE: NO
+```
