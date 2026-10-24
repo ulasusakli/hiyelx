@@ -84,7 +84,7 @@ class RuntimeOperations:
             identity=resource.identity,
             lifecycle_state=resource.state,
             health_status=resource.health.status,
-            health_summary=_sanitized_health_summary(resource.health.detail),
+            health_summary=sanitize_health_summary(resource.health.detail),
         )
 
 
@@ -100,7 +100,8 @@ _SANITIZED_HEALTH_SUMMARIES = frozenset(
 )
 
 
-def _sanitized_health_summary(detail: str | None) -> str | None:
+def sanitize_health_summary(detail: str | None) -> str | None:
+    """Return only fixed HIYELX-owned health wording."""
     if detail in _SANITIZED_HEALTH_SUMMARIES:
         return detail
     return None
