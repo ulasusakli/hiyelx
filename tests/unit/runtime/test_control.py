@@ -16,6 +16,7 @@ from typing import cast
 import pytest
 
 from hiyelx.config import ResourceDefinition, RuntimeConfig
+from hiyelx.models import ModelRegistry
 from hiyelx.resources import HealthStatus, LifecycleState, ResourceIdentity
 from hiyelx.runtime import (
     RuntimeEvent,
@@ -29,6 +30,9 @@ from hiyelx.runtime import (
 )
 from hiyelx.runtime.control import (
     MAX_MESSAGE_BYTES,
+    MAX_PREVIEW_RESOURCES,
+    MIN_PREVIEW_RESOURCES,
+    PREVIEW_REQUEST_TIMEOUT_SECONDS,
     PROTOCOL_VERSION,
     STATE_DIRECTORY_ENV,
     ControlCommand,
@@ -37,7 +41,10 @@ from hiyelx.runtime.control import (
     ControlRequest,
     FailureReply,
     InvalidSessionIdError,
+    PreviewReply,
     ResourceStatus,
+    RuntimePreviewUnavailableError,
+    RuntimePreviewUnsupportedError,
     SessionAlreadyRunningError,
     SessionNotRunningError,
     StatusReply,
@@ -53,6 +60,7 @@ from hiyelx.runtime.control import (
     encode_reply,
     encode_request,
     render_status,
+    request_preview,
     reserve_session,
     resolve_state_directory,
     run_local_runtime,
@@ -68,6 +76,14 @@ from hiyelx.runtime.history import (
     list_runs,
 )
 from hiyelx.runtime.operations import RuntimeOperations
+from hiyelx.simulation import (
+    SimulationMotorPreviewState,
+    SimulationPreviewResourceSnapshot,
+    SimulationPreviewSnapshot,
+    SimulationPreviewUnavailableError,
+    UnsupportedSimulationPreviewResourceError,
+    register_simulated_motor,
+)
 
 
 @pytest.mark.parametrize(
@@ -336,6 +352,116 @@ def test_protocol_round_trips_are_deterministic_and_strict() -> None:
         encode_reply(unsafe_status)
 
 
+def test_preview_protocol_round_trip_is_exact_bounded_and_strict() -> None:
+    request = ControlRequest(ControlCommand.PREVIEW, "alpha")
+    encoded_request = encode_request(request)
+    assert encoded_request == (
+        b'{"command":"preview","protocol_version":1,"session":"alpha"}\n'
+    )
+    assert decode_request(encoded_request) == request
+
+    reply = _preview_reply()
+    encoded_reply = encode_reply(reply)
+    assert encoded_reply == (
+        b'{"kind":"preview","ok":true,"protocol_version":1,"result":{'
+        b'"preview":{"resources":[{"health_status":"healthy",'
+        b'"health_summary":null,"identity":"sim_motor","kind":"motor",'
+        b'"lifecycle_state":"running","state":{'
+        b'"angular_position_radians":0.0,'
+        b'"angular_velocity_radians_per_second":0.0,"revision":0,'
+        b'"simulation_time_seconds":0.0}}],"runtime_state":"running",'
+        b'"schema_version":"1"},"session":"alpha"}}\n'
+    )
+    assert len(encoded_reply) <= MAX_MESSAGE_BYTES
+    assert decode_reply(encoded_reply) == reply
+    assert MIN_PREVIEW_RESOURCES == MAX_PREVIEW_RESOURCES == 1
+    assert PREVIEW_REQUEST_TIMEOUT_SECONDS == 3.0
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "extra-result",
+        "zero-resources",
+        "multiple-resources",
+        "boolean-revision",
+        "integer-position",
+        "unknown-runtime-state",
+        "unsafe-health-summary",
+    ),
+)
+def test_preview_reply_rejects_noncanonical_nested_values(mutation: str) -> None:
+    document = json.loads(encode_reply(_preview_reply()))
+    result = document["result"]
+    preview = result["preview"]
+    resources = preview["resources"]
+    resource = resources[0]
+    state = resource["state"]
+
+    if mutation == "extra-result":
+        result["extra"] = None
+    elif mutation == "zero-resources":
+        preview["resources"] = []
+    elif mutation == "multiple-resources":
+        preview["resources"] = [resource, resource.copy()]
+    elif mutation == "boolean-revision":
+        state["revision"] = True
+    elif mutation == "integer-position":
+        state["angular_position_radians"] = 0
+    elif mutation == "unknown-runtime-state":
+        preview["runtime_state"] = "private-state"
+    else:
+        resource["health_summary"] = "device=/dev/private credential=secret"
+
+    message = json.dumps(
+        document,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8") + b"\n"
+    with pytest.raises(ControlProtocolError):
+        decode_reply(message)
+
+
+def test_preview_reply_rejects_nested_duplicate_keys() -> None:
+    message = encode_reply(_preview_reply()).replace(
+        b'"revision":0',
+        b'"revision":0,"revision":0',
+    )
+
+    with pytest.raises(ControlProtocolError):
+        decode_reply(message)
+
+
+@pytest.mark.asyncio
+async def test_preview_total_deadline_cancels_the_single_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cancelled = False
+
+    async def never_returns(
+        _session: str,
+        _command: ControlCommand,
+        *,
+        state_directory: Path | None,
+    ) -> control.ControlReply:
+        del state_directory
+        nonlocal cancelled
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled = True
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr(control, "PREVIEW_REQUEST_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(control, "_request", never_returns)
+
+    with pytest.raises(ControlProtocolError):
+        await request_preview("alpha")
+
+    assert cancelled
+
+
 @pytest.mark.parametrize("version", (True, False, 1.0, "1", None))
 def test_request_protocol_version_requires_exact_integer(version: object) -> None:
     message = json.dumps(
@@ -500,6 +626,172 @@ async def test_stop_coordination_is_single_and_idempotent() -> None:
     assert await first == reply
     assert await second == reply
     assert coordinator.completed
+
+
+@pytest.mark.asyncio
+async def test_preview_socket_round_trip_is_read_only_and_disconnect_safe(
+    short_state_directory: Path,
+) -> None:
+    registry = ModelRegistry()
+    register_simulated_motor(registry)
+    operations = RuntimeOperations(_simulation_config(), registry)
+    await operations.start()
+    owned = reserve_session("preview", state_directory=short_state_directory)
+    server = control.LocalControlServer(owned.layout, operations, StopCoordinator())
+    try:
+        await server.start()
+        owned.publish(configuration_fingerprint(_simulation_config()))
+        operations_before = operations.snapshot()
+        preview_before = operations.simulation_preview_snapshot()
+        manifest_before = owned.layout.manifest.read_bytes()
+
+        first = await request_preview(
+            "preview",
+            state_directory=short_state_directory,
+        )
+        second = await request_preview(
+            "preview",
+            state_directory=short_state_directory,
+        )
+
+        assert first == second
+        assert first.session == "preview"
+        assert first.preview == preview_before
+        assert operations.snapshot() == operations_before
+        assert operations.simulation_preview_snapshot() == preview_before
+        assert owned.layout.manifest.read_bytes() == manifest_before
+
+        _reader, disconnected = await asyncio.open_unix_connection(
+            str(owned.layout.socket),
+            limit=MAX_MESSAGE_BYTES + 1,
+        )
+        disconnected.write(
+            encode_request(ControlRequest(ControlCommand.PREVIEW, "preview"))
+        )
+        await disconnected.drain()
+        disconnected.transport.abort()
+
+        status = await control.request_status(
+            "preview",
+            state_directory=short_state_directory,
+        )
+        assert status.manager_state is RuntimeManagerState.RUNNING
+        assert operations.snapshot() == operations_before
+        assert operations.simulation_preview_snapshot() == preview_before
+    finally:
+        await server.close()
+        await server.wait_handlers()
+        await operations.safe_stop()
+        await operations.shutdown()
+        assert owned.cleanup(final=True)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ("unavailable", "unsupported-zero", "unsupported-multiple", "unsupported-kind"),
+)
+@pytest.mark.asyncio
+async def test_preview_socket_maps_typed_provider_failures(
+    failure: str,
+    short_state_directory: Path,
+) -> None:
+    class FailingPreviewOperations:
+        def simulation_preview_snapshot(self) -> SimulationPreviewSnapshot:
+            if failure == "unavailable":
+                raise SimulationPreviewUnavailableError
+            if failure == "unsupported-kind":
+                raise UnsupportedSimulationPreviewResourceError(
+                    ResourceIdentity("unsupported")
+                )
+            resources = ()
+            if failure == "unsupported-multiple":
+                resources = (
+                    _preview_resource("sim_motor"),
+                    _preview_resource("sim_motor_2"),
+                )
+            return SimulationPreviewSnapshot(
+                schema_version="1",
+                runtime_state=RuntimeManagerState.RUNNING,
+                resources=resources,
+            )
+
+    session = {
+        "unavailable": "p-u",
+        "unsupported-zero": "p-z",
+        "unsupported-multiple": "p-m",
+        "unsupported-kind": "p-k",
+    }[failure]
+    owned = reserve_session(session, state_directory=short_state_directory)
+    server = control.LocalControlServer(
+        owned.layout,
+        cast(RuntimeOperations, FailingPreviewOperations()),
+        StopCoordinator(),
+    )
+    try:
+        await server.start()
+        owned.publish(configuration_fingerprint(_simulation_config()))
+        expected = (
+            RuntimePreviewUnavailableError
+            if failure == "unavailable"
+            else RuntimePreviewUnsupportedError
+        )
+        expected_message = (
+            "runtime preview is unavailable"
+            if failure == "unavailable"
+            else "runtime preview is unsupported"
+        )
+        with pytest.raises(expected) as caught:
+            await request_preview(
+                session,
+                state_directory=short_state_directory,
+            )
+        assert str(caught.value) == expected_message
+    finally:
+        await server.close()
+        await server.wait_handlers()
+        assert owned.cleanup(final=True)
+
+
+@pytest.mark.asyncio
+async def test_preview_encoder_failure_is_sanitized_and_owner_stays_responsive(
+    short_state_directory: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = ModelRegistry()
+    register_simulated_motor(registry)
+    operations = RuntimeOperations(_simulation_config(), registry)
+    await operations.start()
+    owned = reserve_session("preview-encode", state_directory=short_state_directory)
+    server = control.LocalControlServer(owned.layout, operations, StopCoordinator())
+    original_encode_reply = control.encode_reply
+
+    def fail_preview_encoding(reply: control.ControlReply) -> bytes:
+        if isinstance(reply, PreviewReply):
+            raise RuntimeError("private encoder detail")
+        return original_encode_reply(reply)
+
+    monkeypatch.setattr(control, "encode_reply", fail_preview_encoding)
+    try:
+        await server.start()
+        owned.publish(configuration_fingerprint(_simulation_config()))
+
+        with pytest.raises(ControlProtocolError):
+            await request_preview(
+                "preview-encode",
+                state_directory=short_state_directory,
+            )
+
+        status = await control.request_status(
+            "preview-encode",
+            state_directory=short_state_directory,
+        )
+        assert status.manager_state is RuntimeManagerState.RUNNING
+    finally:
+        await server.close()
+        await server.wait_handlers()
+        await operations.safe_stop()
+        await operations.shutdown()
+        assert owned.cleanup(final=True)
 
 
 @pytest.mark.asyncio
@@ -1934,6 +2226,28 @@ def _status() -> StatusReply:
         active_resource_order=(identity,),
         event_high_water_mark=3,
         latest_event_summary="runtime running",
+    )
+
+
+def _preview_reply() -> PreviewReply:
+    return PreviewReply(
+        session="alpha",
+        preview=SimulationPreviewSnapshot(
+            schema_version="1",
+            runtime_state=RuntimeManagerState.RUNNING,
+            resources=(_preview_resource("sim_motor"),),
+        ),
+    )
+
+
+def _preview_resource(identity: str) -> SimulationPreviewResourceSnapshot:
+    return SimulationPreviewResourceSnapshot(
+        identity=ResourceIdentity(identity),
+        kind="motor",
+        lifecycle_state=LifecycleState.RUNNING,
+        health_status=HealthStatus.HEALTHY,
+        health_summary=None,
+        state=SimulationMotorPreviewState(0.0, 0.0, 0.0, 0),
     )
 
 

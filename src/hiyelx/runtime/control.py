@@ -39,10 +39,22 @@ from hiyelx.runtime.history import (
 from hiyelx.runtime.operations import RuntimeOperations, RuntimeOperationsSnapshot
 from hiyelx.runtime.planning import plan_startup
 from hiyelx.runtime.state import RuntimeManagerState
-from hiyelx.simulation import SIMULATED_MOTOR_MODEL, register_simulated_motor
+from hiyelx.simulation import (
+    SIMULATED_MOTOR_MODEL,
+    SIMULATION_PREVIEW_SCHEMA_VERSION,
+    SimulationMotorPreviewState,
+    SimulationPreviewResourceSnapshot,
+    SimulationPreviewSnapshot,
+    SimulationPreviewUnavailableError,
+    UnsupportedSimulationPreviewResourceError,
+    register_simulated_motor,
+)
 
 PROTOCOL_VERSION = 1
 MAX_MESSAGE_BYTES = 8192
+MIN_PREVIEW_RESOURCES = 1
+MAX_PREVIEW_RESOURCES = 1
+PREVIEW_REQUEST_TIMEOUT_SECONDS = 3.0
 STATE_DIRECTORY_ENV = "HIYELX_RUNTIME_STATE_DIR"
 _MANIFEST_NAME = "manifest.json"
 _MANIFEST_TEMP_NAME = ".manifest.tmp"
@@ -158,11 +170,26 @@ class RuntimeHistoryError(RuntimeControlError):
     """Raised for a sanitized durable run-history failure."""
 
 
+class RuntimePreviewUnavailableError(RuntimeControlError):
+    """Raised when the active owner cannot produce one coherent preview."""
+
+    def __init__(self) -> None:
+        super().__init__("runtime preview is unavailable")
+
+
+class RuntimePreviewUnsupportedError(RuntimeControlError):
+    """Raised when the active owner is outside the preview resource bound."""
+
+    def __init__(self) -> None:
+        super().__init__("runtime preview is unsupported")
+
+
 class ControlCommand(StrEnum):
-    """Commands supported by the private RTO-2 protocol."""
+    """Commands supported by the private local-control protocol."""
 
     STATUS = "status"
     STOP = "stop"
+    PREVIEW = "preview"
 
 
 class ControlErrorCode(StrEnum):
@@ -172,6 +199,8 @@ class ControlErrorCode(StrEnum):
     UNKNOWN_COMMAND = "unknown_command"
     RUNTIME_CLEANUP_FAILED = "runtime_cleanup_failed"
     RUNTIME_HISTORY_FAILED = "runtime_history_failed"
+    PREVIEW_UNAVAILABLE = "preview_unavailable"
+    PREVIEW_UNSUPPORTED = "preview_unsupported"
     INTERNAL_FAILURE = "internal_failure"
 
 
@@ -180,6 +209,8 @@ _CONTROL_FAILURE_MESSAGES = {
     ControlErrorCode.UNKNOWN_COMMAND: "control command is unknown",
     ControlErrorCode.RUNTIME_CLEANUP_FAILED: "runtime cleanup failed",
     ControlErrorCode.RUNTIME_HISTORY_FAILED: "runtime history failed",
+    ControlErrorCode.PREVIEW_UNAVAILABLE: "runtime preview is unavailable",
+    ControlErrorCode.PREVIEW_UNSUPPORTED: "runtime preview is unsupported",
     ControlErrorCode.INTERNAL_FAILURE: "control operation failed",
 }
 
@@ -223,6 +254,14 @@ class StopReply:
 
 
 @dataclass(frozen=True, slots=True)
+class PreviewReply:
+    """Strict successful private preview reply."""
+
+    session: str
+    preview: SimulationPreviewSnapshot
+
+
+@dataclass(frozen=True, slots=True)
 class FailureReply:
     """Strict sanitized failure reply."""
 
@@ -230,7 +269,7 @@ class FailureReply:
     message: str
 
 
-ControlReply = StatusReply | StopReply | FailureReply
+ControlReply = StatusReply | StopReply | PreviewReply | FailureReply
 
 
 @dataclass(frozen=True, slots=True)
@@ -432,7 +471,16 @@ class LocalControlServer:
             self._handlers.add(cast(asyncio.Task[None], task))
         try:
             reply = await self._reply_for_connection(reader)
-            writer.write(encode_reply(reply))
+            try:
+                encoded_reply = encode_reply(reply)
+            except Exception:
+                encoded_reply = encode_reply(
+                    FailureReply(
+                        ControlErrorCode.INTERNAL_FAILURE,
+                        "control operation failed",
+                    )
+                )
+            writer.write(encoded_reply)
             await writer.drain()
         except (ConnectionError, OSError):
             pass
@@ -474,11 +522,40 @@ class LocalControlServer:
                     ControlErrorCode.INTERNAL_FAILURE,
                     "control operation failed",
                 )
+        if request.command is ControlCommand.PREVIEW:
+            try:
+                preview = self._operations.simulation_preview_snapshot()
+                _validate_preview_transport_snapshot(preview)
+                return PreviewReply(self._layout.session, preview)
+            except SimulationPreviewUnavailableError:
+                return FailureReply(
+                    ControlErrorCode.PREVIEW_UNAVAILABLE,
+                    "runtime preview is unavailable",
+                )
+            except UnsupportedSimulationPreviewResourceError:
+                return FailureReply(
+                    ControlErrorCode.PREVIEW_UNSUPPORTED,
+                    "runtime preview is unsupported",
+                )
+            except UnsupportedPreviewResourceCountError:
+                return FailureReply(
+                    ControlErrorCode.PREVIEW_UNSUPPORTED,
+                    "runtime preview is unsupported",
+                )
+            except Exception:
+                return FailureReply(
+                    ControlErrorCode.INTERNAL_FAILURE,
+                    "control operation failed",
+                )
         return await self._coordinator.request_stop()
 
 
 class UnknownControlCommandError(ControlProtocolError):
     """Internal distinction used to return a stable unknown-command response."""
+
+
+class UnsupportedPreviewResourceCountError(ControlProtocolError):
+    """Internal distinction for the one-resource cross-process Alpha bound."""
 
 
 def validate_session_id(session: str) -> str:
@@ -726,6 +803,20 @@ def encode_reply(reply: ControlReply) -> bytes:
                 "result": {"session": reply.session, "stopped": True},
             }
         )
+    if isinstance(reply, PreviewReply):
+        validate_session_id(reply.session)
+        _validate_preview_transport_snapshot(reply.preview)
+        return _encode_document(
+            {
+                "kind": "preview",
+                "ok": True,
+                "protocol_version": PROTOCOL_VERSION,
+                "result": {
+                    "preview": _encode_preview_snapshot(reply.preview),
+                    "session": reply.session,
+                },
+            }
+        )
     return _encode_document(
         {
             "error": {"code": reply.code.value, "message": reply.message},
@@ -774,9 +865,21 @@ def decode_reply(message: bytes) -> ControlReply:
         if not isinstance(session, str) or typed_result["stopped"] is not True:
             raise ControlProtocolError
         return StopReply(validate_session_id(session))
-    if kind != "status":
-        raise ControlProtocolError
-    return _decode_status_result(typed_result)
+    if kind == "status":
+        return _decode_status_result(typed_result)
+    if kind == "preview":
+        _require_exact_keys(typed_result, {"preview", "session"})
+        session = typed_result["session"]
+        if not isinstance(session, str):
+            raise ControlProtocolError
+        try:
+            validated_session = validate_session_id(session)
+            preview = _decode_preview_snapshot(typed_result["preview"])
+            _validate_preview_transport_snapshot(preview)
+        except (ValueError, RuntimeControlError) as error:
+            raise ControlProtocolError from error
+        return PreviewReply(validated_session, preview)
+    raise ControlProtocolError
 
 
 async def request_status(
@@ -805,6 +908,31 @@ async def request_stop(
         raise RuntimeOwnerCleanupError
     if isinstance(reply, FailureReply) and reply.code is ControlErrorCode.RUNTIME_HISTORY_FAILED:
         raise RuntimeHistoryError
+    raise ControlProtocolError
+
+
+async def request_preview(
+    session: str,
+    *,
+    state_directory: Path | None = None,
+) -> PreviewReply:
+    """Request one typed preview under one total monotonic I/O deadline."""
+    try:
+        async with asyncio.timeout(PREVIEW_REQUEST_TIMEOUT_SECONDS):
+            reply = await _request(
+                session,
+                ControlCommand.PREVIEW,
+                state_directory=state_directory,
+            )
+    except TimeoutError as error:
+        raise ControlProtocolError from error
+    if isinstance(reply, PreviewReply):
+        return reply
+    if isinstance(reply, FailureReply):
+        if reply.code is ControlErrorCode.PREVIEW_UNAVAILABLE:
+            raise RuntimePreviewUnavailableError
+        if reply.code is ControlErrorCode.PREVIEW_UNSUPPORTED:
+            raise RuntimePreviewUnsupportedError
     raise ControlProtocolError
 
 
@@ -1139,6 +1267,147 @@ async def _request(
         writer.close()
         with suppress(ConnectionError, OSError):
             await writer.wait_closed()
+
+
+def _encode_preview_snapshot(snapshot: SimulationPreviewSnapshot) -> dict[str, object]:
+    return {
+        "resources": [
+            {
+                "health_status": resource.health_status.value,
+                "health_summary": resource.health_summary,
+                "identity": resource.identity.value,
+                "kind": resource.kind,
+                "lifecycle_state": resource.lifecycle_state.value,
+                "state": {
+                    "angular_position_radians": (
+                        resource.state.angular_position_radians
+                    ),
+                    "angular_velocity_radians_per_second": (
+                        resource.state.angular_velocity_radians_per_second
+                    ),
+                    "revision": resource.state.revision,
+                    "simulation_time_seconds": (
+                        resource.state.simulation_time_seconds
+                    ),
+                },
+            }
+            for resource in snapshot.resources
+        ],
+        "runtime_state": snapshot.runtime_state.value,
+        "schema_version": snapshot.schema_version,
+    }
+
+
+def _decode_preview_snapshot(value: object) -> SimulationPreviewSnapshot:
+    if not isinstance(value, dict):
+        raise ControlProtocolError
+    document = cast(dict[object, object], value)
+    _require_exact_keys(document, {"resources", "runtime_state", "schema_version"})
+    schema_version = document["schema_version"]
+    runtime_state = document["runtime_state"]
+    resources = document["resources"]
+    if (
+        type(schema_version) is not str
+        or schema_version != SIMULATION_PREVIEW_SCHEMA_VERSION
+        or not isinstance(runtime_state, str)
+        or not isinstance(resources, list)
+    ):
+        raise ControlProtocolError
+    try:
+        snapshot = SimulationPreviewSnapshot(
+            schema_version=SIMULATION_PREVIEW_SCHEMA_VERSION,
+            runtime_state=RuntimeManagerState(runtime_state),
+            resources=tuple(
+                _decode_preview_resource(item)
+                for item in cast(list[object], resources)
+            ),
+        )
+        _validate_preview_transport_snapshot(snapshot)
+        return snapshot
+    except (TypeError, ValueError, RuntimeControlError) as error:
+        raise ControlProtocolError from error
+
+
+def _decode_preview_resource(value: object) -> SimulationPreviewResourceSnapshot:
+    if not isinstance(value, dict):
+        raise ControlProtocolError
+    resource = cast(dict[object, object], value)
+    _require_exact_keys(
+        resource,
+        {
+            "health_status",
+            "health_summary",
+            "identity",
+            "kind",
+            "lifecycle_state",
+            "state",
+        },
+    )
+    identity = resource["identity"]
+    kind = resource["kind"]
+    lifecycle_state = resource["lifecycle_state"]
+    health_status = resource["health_status"]
+    health_summary = resource["health_summary"]
+    if (
+        not isinstance(identity, str)
+        or type(kind) is not str
+        or kind != "motor"
+        or not isinstance(lifecycle_state, str)
+        or not isinstance(health_status, str)
+        or (health_summary is not None and not isinstance(health_summary, str))
+    ):
+        raise ControlProtocolError
+    try:
+        return SimulationPreviewResourceSnapshot(
+            identity=ResourceIdentity(identity),
+            kind="motor",
+            lifecycle_state=LifecycleState(lifecycle_state),
+            health_status=HealthStatus(health_status),
+            health_summary=health_summary,
+            state=_decode_preview_motor_state(resource["state"]),
+        )
+    except (TypeError, ValueError) as error:
+        raise ControlProtocolError from error
+
+
+def _decode_preview_motor_state(value: object) -> SimulationMotorPreviewState:
+    if not isinstance(value, dict):
+        raise ControlProtocolError
+    state = cast(dict[object, object], value)
+    _require_exact_keys(
+        state,
+        {
+            "angular_position_radians",
+            "angular_velocity_radians_per_second",
+            "revision",
+            "simulation_time_seconds",
+        },
+    )
+    position = state["angular_position_radians"]
+    velocity = state["angular_velocity_radians_per_second"]
+    revision = state["revision"]
+    simulation_time = state["simulation_time_seconds"]
+    if (
+        type(position) is not float
+        or type(velocity) is not float
+        or type(revision) is not int
+        or type(simulation_time) is not float
+    ):
+        raise ControlProtocolError
+    try:
+        return SimulationMotorPreviewState(
+            angular_position_radians=position,
+            angular_velocity_radians_per_second=velocity,
+            simulation_time_seconds=simulation_time,
+            revision=revision,
+        )
+    except ValueError as error:
+        raise ControlProtocolError from error
+
+
+def _validate_preview_transport_snapshot(snapshot: SimulationPreviewSnapshot) -> None:
+    if not MIN_PREVIEW_RESOURCES <= len(snapshot.resources) <= MAX_PREVIEW_RESOURCES:
+        raise UnsupportedPreviewResourceCountError
 
 
 def _decode_status_result(result: dict[object, object]) -> StatusReply:

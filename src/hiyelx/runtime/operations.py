@@ -1,6 +1,9 @@
 """Read-only local Runtime Operations snapshots and lifecycle façade."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from hiyelx.config import RuntimeConfig
 from hiyelx.models import ModelRegistry
@@ -14,6 +17,9 @@ from hiyelx.runtime.errors import SafeStopReport
 from hiyelx.runtime.events import LocalEventRecorder, RuntimeEvent
 from hiyelx.runtime.manager import RuntimeManager
 from hiyelx.runtime.state import RuntimeManagerState
+
+if TYPE_CHECKING:
+    from hiyelx.simulation.preview import SimulationPreviewSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +67,12 @@ class RuntimeOperations:
             event_high_water_mark=self._event_recorder.high_water_mark,
             events=events,
         )
+
+    def simulation_preview_snapshot(self) -> SimulationPreviewSnapshot:
+        """Return the typed simulation preview without exposing the manager."""
+        from hiyelx.simulation.preview import SimulationPreviewProvider
+
+        return SimulationPreviewProvider(self._manager).snapshot()
 
     async def start(self) -> None:
         """Explicitly delegate startup to the owned Runtime Manager."""
