@@ -116,6 +116,8 @@ class RuntimeCliExitCode(IntEnum):
     UNSUPPORTED_PLATFORM = 9
     HISTORY_STORE_FAILURE = 10
     RUN_NOT_FOUND = 11
+    PREVIEW_UNAVAILABLE = 12
+    PREVIEW_UNSUPPORTED = 13
 
 
 class RuntimeControlError(Exception):

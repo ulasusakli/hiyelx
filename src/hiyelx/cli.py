@@ -33,11 +33,14 @@ from hiyelx.runtime.control import (
     RuntimeHistoryError,
     RuntimeOwnerCleanupError,
     RuntimeOwnerStartupError,
+    RuntimePreviewUnavailableError,
+    RuntimePreviewUnsupportedError,
     SessionAlreadyRunningError,
     SessionNotRunningError,
     UnsafeSessionPathError,
     UnsupportedPlatformError,
     render_status,
+    request_preview,
     request_status,
     request_stop,
     run_local_runtime,
@@ -66,7 +69,11 @@ from hiyelx.runtime.history import (
     validate_retention_keep,
 )
 from hiyelx.sdk import MotorDriverScaffoldError, create_motor_driver_scaffold
-from hiyelx.simulation import SimulatedMotor, register_simulated_motor
+from hiyelx.simulation import (
+    SimulatedMotor,
+    register_simulated_motor,
+    render_simulation_preview_json,
+)
 
 SUCCESS = 0
 FAILURE = 1
@@ -109,6 +116,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _runtime_start(arguments.path, session=arguments.session)
         if arguments.runtime == "status":
             return _runtime_status(session=arguments.session)
+        if arguments.runtime == "preview":
+            return _runtime_preview(session=arguments.session)
         if arguments.runtime == "stop":
             return _runtime_stop(session=arguments.session)
         if arguments.runtime == "events":
@@ -187,6 +196,11 @@ def _parser() -> argparse.ArgumentParser:
         help="print a sanitized local runtime snapshot",
     )
     runtime_status.add_argument("--session", required=True)
+    runtime_preview = runtime_commands.add_parser(
+        "preview",
+        help="print one canonical simulation preview snapshot",
+    )
+    runtime_preview.add_argument("--session", required=True)
     runtime_stop = runtime_commands.add_parser(
         "stop",
         help="request ordered safe-stop and shutdown",
@@ -301,6 +315,43 @@ def _runtime_status(*, session: str) -> int:
         )
     for line in render_status(reply):
         print(line)
+    return RuntimeCliExitCode.SUCCESS
+
+
+def _runtime_preview(*, session: str) -> int:
+    try:
+        reply = asyncio.run(request_preview(session))
+    except InvalidSessionIdError:
+        return _runtime_failure(
+            RuntimeCliExitCode.INVALID_SESSION_ID,
+            "runtime session ID is invalid",
+        )
+    except SessionNotRunningError:
+        return _runtime_failure(
+            RuntimeCliExitCode.SESSION_NOT_RUNNING,
+            "runtime session is not running",
+        )
+    except UnsupportedPlatformError:
+        return _runtime_failure(
+            RuntimeCliExitCode.UNSUPPORTED_PLATFORM,
+            "runtime control is unsupported on this platform",
+        )
+    except RuntimePreviewUnavailableError:
+        return _runtime_failure(
+            RuntimeCliExitCode.PREVIEW_UNAVAILABLE,
+            "runtime preview is unavailable",
+        )
+    except RuntimePreviewUnsupportedError:
+        return _runtime_failure(
+            RuntimeCliExitCode.PREVIEW_UNSUPPORTED,
+            "runtime preview is unsupported",
+        )
+    except (ControlProtocolError, UnsafeSessionPathError, OSError):
+        return _runtime_failure(
+            RuntimeCliExitCode.CONTROL_PROTOCOL_FAILURE,
+            "runtime control failed",
+        )
+    sys.stdout.write(render_simulation_preview_json(reply.preview))
     return RuntimeCliExitCode.SUCCESS
 
 

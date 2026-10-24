@@ -14,11 +14,18 @@ from hiyelx.runtime import (
     RuntimeManagerState,
 )
 from hiyelx.runtime.control import (
+    ControlProtocolError,
+    InvalidSessionIdError,
+    PreviewReply,
     ResourceStatus,
     RuntimeCliExitCode,
+    RuntimePreviewUnavailableError,
+    RuntimePreviewUnsupportedError,
     SessionNotRunningError,
     StatusReply,
     StopReply,
+    UnsafeSessionPathError,
+    UnsupportedPlatformError,
 )
 from hiyelx.runtime.history import (
     EventRecord,
@@ -28,7 +35,12 @@ from hiyelx.runtime.history import (
     RunResult,
     StopReason,
 )
-from hiyelx.simulation import SimulatedMotor
+from hiyelx.simulation import (
+    SimulatedMotor,
+    SimulationMotorPreviewState,
+    SimulationPreviewResourceSnapshot,
+    SimulationPreviewSnapshot,
+)
 
 EXPECTED_TRANSCRIPT = tuple(
     (
@@ -137,6 +149,130 @@ def test_runtime_status_and_stop_dispatch_with_canonical_output(
     captured = capsys.readouterr()
     assert captured.out == "session=alpha\nruntime=stopped\n"
     assert captured.err == ""
+
+
+def test_runtime_preview_dispatch_emits_only_canonical_snapshot(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    snapshot = SimulationPreviewSnapshot(
+        schema_version="1",
+        runtime_state=RuntimeManagerState.RUNNING,
+        resources=(
+            SimulationPreviewResourceSnapshot(
+                identity=ResourceIdentity("sim_motor"),
+                kind="motor",
+                lifecycle_state=LifecycleState.RUNNING,
+                health_status=HealthStatus.HEALTHY,
+                health_summary=None,
+                state=SimulationMotorPreviewState(1.5, 0.5, 2.0, 3),
+            ),
+        ),
+    )
+
+    async def fake_preview(session: str) -> PreviewReply:
+        calls.append(session)
+        assert session == "alpha"
+        return PreviewReply("alpha", snapshot)
+
+    monkeypatch.setattr(cli, "request_preview", fake_preview)
+
+    assert (
+        cli.main(["runtime", "preview", "--session", "alpha"])
+        == RuntimeCliExitCode.SUCCESS
+    )
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out == (
+        '{"resources":[{"health_status":"healthy","health_summary":null,'
+        '"identity":"sim_motor","kind":"motor","lifecycle_state":"running",'
+        '"state":{"angular_position_radians":1.5,'
+        '"angular_velocity_radians_per_second":0.5,"revision":3,'
+        '"simulation_time_seconds":2.0}}],"runtime_state":"running",'
+        '"schema_version":"1"}\n'
+    )
+    assert calls == ["alpha"]
+    assert "alpha" not in captured.out
+
+
+@pytest.mark.parametrize(
+    ("error", "exit_code", "message"),
+    (
+        (
+            InvalidSessionIdError(),
+            RuntimeCliExitCode.INVALID_SESSION_ID,
+            "runtime session ID is invalid",
+        ),
+        (
+            SessionNotRunningError(),
+            RuntimeCliExitCode.SESSION_NOT_RUNNING,
+            "runtime session is not running",
+        ),
+        (
+            ControlProtocolError("private protocol detail"),
+            RuntimeCliExitCode.CONTROL_PROTOCOL_FAILURE,
+            "runtime control failed",
+        ),
+        (
+            UnsafeSessionPathError("private path"),
+            RuntimeCliExitCode.CONTROL_PROTOCOL_FAILURE,
+            "runtime control failed",
+        ),
+        (
+            OSError("private local I/O detail"),
+            RuntimeCliExitCode.CONTROL_PROTOCOL_FAILURE,
+            "runtime control failed",
+        ),
+        (
+            UnsupportedPlatformError(),
+            RuntimeCliExitCode.UNSUPPORTED_PLATFORM,
+            "runtime control is unsupported on this platform",
+        ),
+        (
+            RuntimePreviewUnavailableError(),
+            RuntimeCliExitCode.PREVIEW_UNAVAILABLE,
+            "runtime preview is unavailable",
+        ),
+        (
+            RuntimePreviewUnsupportedError(),
+            RuntimeCliExitCode.PREVIEW_UNSUPPORTED,
+            "runtime preview is unsupported",
+        ),
+    ),
+)
+def test_runtime_preview_failures_are_exact_and_sanitized(
+    error: Exception,
+    exit_code: RuntimeCliExitCode,
+    message: str,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail(_session: str) -> PreviewReply:
+        raise error
+
+    monkeypatch.setattr(cli, "request_preview", fail)
+
+    assert cli.main(["runtime", "preview", "--session", "alpha"]) == exit_code
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == f"error: {message}\n"
+    assert "private" not in captured.err
+
+
+def test_runtime_preview_rejects_text_and_json_modes(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    for arguments in (
+        ["runtime", "preview", "--session", "alpha", "--json"],
+        ["runtime", "preview", "--session", "alpha", "text"],
+    ):
+        with pytest.raises(SystemExit) as caught:
+            cli.main(arguments)
+        assert caught.value.code == RuntimeCliExitCode.INVALID_CONFIGURATION
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "usage:" in captured.err
 
 
 def test_runtime_cli_validation_and_missing_session_are_sanitized(

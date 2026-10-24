@@ -31,6 +31,14 @@ active-resource-order=sim_motor
 event-high-water-mark=3
 latest-event=runtime running
 """
+_PREVIEW_OUTPUT = (
+    '{"resources":[{"health_status":"healthy","health_summary":null,'
+    '"identity":"sim_motor","kind":"motor","lifecycle_state":"running",'
+    '"state":{"angular_position_radians":0.0,'
+    '"angular_velocity_radians_per_second":0.0,"revision":0,'
+    '"simulation_time_seconds":0.0}}],"runtime_state":"running",'
+    '"schema_version":"1"}\n'
+)
 
 
 def test_run_queries_handle_missing_store_without_creating_it(
@@ -160,6 +168,98 @@ def test_cross_process_start_status_stop_and_duplicate_start(
         assert missing.returncode == RuntimeCliExitCode.SESSION_NOT_RUNNING
         assert missing.stdout == ""
         assert missing.stderr == "error: runtime session is not running\n"
+
+
+@pytest.mark.skipif(sys.platform not in {"darwin", "linux"}, reason="Unix sockets required")
+def test_cross_process_preview_is_canonical_read_only_and_sanitized(
+    short_state_directory: Path,
+) -> None:
+    state = short_state_directory
+    environment = _environment(state)
+    owner = _start_owner(environment, session="preview")
+    try:
+        assert _read_lines(owner, 3) == (
+            "session=preview",
+            "runtime=running",
+            "control=ready",
+        )
+        running = json.loads(
+            _run("runs", "list", "--json", environment=environment).stdout
+        )["runs"]
+        assert len(running) == 1
+        run_id = cast(str, running[0]["run_id"])
+        status_before = _run(
+            "status", "--session", "preview", environment=environment
+        ).stdout
+        assert status_before.startswith("session=preview\nmanager-state=running\n")
+        events_before = _run(
+            "events", "--run", run_id, "--json", environment=environment
+        ).stdout
+        session_directory = state / "preview"
+        entries_before = tuple(sorted(path.name for path in session_directory.iterdir()))
+        socket_before = (session_directory / "control.sock").lstat()
+        artifacts_before = {
+            path.name: path.read_bytes()
+            for path in session_directory.iterdir()
+            if path.is_file() and path.name != "control.sock"
+        }
+
+        first = _run("preview", "--session", "preview", environment=environment)
+        second = _run("preview", "--session", "preview", environment=environment)
+        assert first.returncode == RuntimeCliExitCode.SUCCESS
+        assert second.returncode == RuntimeCliExitCode.SUCCESS
+        assert first.stdout == second.stdout == _PREVIEW_OUTPUT
+        assert first.stderr == second.stderr == ""
+        assert owner.poll() is None
+
+        events_after = _run(
+            "events", "--run", run_id, "--json", environment=environment
+        ).stdout
+        status_after = _run(
+            "status", "--session", "preview", environment=environment
+        ).stdout
+        runs_after = json.loads(
+            _run("runs", "list", "--json", environment=environment).stdout
+        )["runs"]
+        artifacts_after = {
+            path.name: path.read_bytes()
+            for path in session_directory.iterdir()
+            if path.is_file() and path.name != "control.sock"
+        }
+        entries_after = tuple(sorted(path.name for path in session_directory.iterdir()))
+        socket_after = (session_directory / "control.sock").lstat()
+        assert status_after == status_before
+        assert events_after == events_before
+        assert runs_after == running
+        assert artifacts_after == artifacts_before
+        assert entries_after == entries_before
+        assert (socket_after.st_mode, socket_after.st_ino) == (
+            socket_before.st_mode,
+            socket_before.st_ino,
+        )
+
+        invalid = _run(
+            "preview", "--session", "../private", environment=environment
+        )
+        assert invalid.returncode == RuntimeCliExitCode.INVALID_SESSION_ID
+        assert invalid.stdout == ""
+        assert invalid.stderr == "error: runtime session ID is invalid\n"
+
+        stopped = _run("stop", "--session", "preview", environment=environment)
+        assert stopped.returncode == RuntimeCliExitCode.SUCCESS
+        assert owner.wait(timeout=10) == RuntimeCliExitCode.SUCCESS
+        assert owner.stdout is not None
+        assert owner.stdout.read() == "runtime=stopped\n"
+        assert owner.stderr is not None
+        assert owner.stderr.read() == ""
+        assert not session_directory.exists()
+    finally:
+        _stop_test_owner(owner)
+
+    missing = _run("preview", "--session", "preview", environment=environment)
+    assert missing.returncode == RuntimeCliExitCode.SESSION_NOT_RUNNING
+    assert missing.stdout == ""
+    assert missing.stderr == "error: runtime session is not running\n"
 
 
 @pytest.mark.skipif(sys.platform not in {"darwin", "linux"}, reason="Unix sockets required")
