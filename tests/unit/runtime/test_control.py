@@ -25,6 +25,7 @@ from hiyelx.runtime import (
     RuntimeOperationsSnapshot,
     RuntimeResourceSnapshot,
     control,
+    history,
 )
 from hiyelx.runtime.control import (
     MAX_MESSAGE_BYTES,
@@ -1701,8 +1702,23 @@ async def test_bounded_sqlite_contention_does_not_skip_runtime_cleanup(
         short_state_directory.parent / f"{short_state_directory.name}-history-contention"
     )
     lock_connection: sqlite3.Connection | None = None
+    contention_active = False
     cleanup_calls = 0
+    contended_persist_events_attempts = 0
+    contended_finalize_run_attempts = 0
     original_cleanup = control._cleanup_operations  # pyright: ignore[reportPrivateUsage]
+    original_persist_events = control.HistoryStore.persist_events
+    original_finalize_run = control.HistoryStore.finalize_run
+    expected_contended_history_write_attempts = 2
+    hosted_scheduler_filesystem_margin_seconds = 2.0
+    minimum_contention_elapsed_seconds = 0.5
+    production_write_timeout_seconds = (
+        history._WRITE_TIMEOUT_SECONDS  # pyright: ignore[reportPrivateUsage]
+    )
+    aggregate_upper_bound_seconds = (
+        expected_contended_history_write_attempts * production_write_timeout_seconds
+        + hosted_scheduler_filesystem_margin_seconds
+    )
 
     class LockingStopServer:
         def __init__(
@@ -1714,13 +1730,14 @@ async def test_bounded_sqlite_contention_does_not_skip_runtime_cleanup(
             self._coordinator = coordinator
 
         async def start(self) -> None:
-            nonlocal lock_connection
+            nonlocal contention_active, lock_connection
             lock_connection = sqlite3.connect(
                 history_root / "history.sqlite3",
                 timeout=0,
                 isolation_level=None,
             )
             lock_connection.execute("BEGIN IMMEDIATE")
+            contention_active = True
             self._coordinator.stop_reason = StopReason.CLI_STOP
             self._coordinator.requested.set()
 
@@ -1742,8 +1759,38 @@ async def test_bounded_sqlite_contention_does_not_skip_runtime_cleanup(
         cleanup_calls += 1
         return await original_cleanup(operations, persist_events=persist_events)
 
+    def count_contended_persist_events(
+        store: control.HistoryStore,
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        nonlocal contended_persist_events_attempts
+        if contention_active:
+            contended_persist_events_attempts += 1
+        return original_persist_events(store, *args, **kwargs)  # type: ignore[arg-type]
+
+    def count_contended_finalize_run(
+        store: control.HistoryStore,
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        nonlocal contended_finalize_run_attempts
+        if contention_active:
+            contended_finalize_run_attempts += 1
+        return original_finalize_run(store, *args, **kwargs)  # type: ignore[arg-type]
+
     monkeypatch.setattr(control, "LocalControlServer", LockingStopServer)
     monkeypatch.setattr(control, "_cleanup_operations", count_cleanup)
+    monkeypatch.setattr(
+        control.HistoryStore,
+        "persist_events",
+        count_contended_persist_events,
+    )
+    monkeypatch.setattr(
+        control.HistoryStore,
+        "finalize_run",
+        count_contended_finalize_run,
+    )
     started = time.monotonic()
     try:
         with pytest.raises(control.RuntimeHistoryError):
@@ -1757,13 +1804,27 @@ async def test_bounded_sqlite_contention_does_not_skip_runtime_cleanup(
         if lock_connection is not None:
             lock_connection.rollback()
             lock_connection.close()
+        elapsed = time.monotonic() - started
+        contention_active = False
 
-    assert 0.5 <= time.monotonic() - started < 3.0
+    # Two independent 1 s busy timeouts plus an explicit hosted scheduling and
+    # filesystem margin form a regression-harness budget, not a latency promise.
+    # The lower bound rejects an immediate-return regression; counters prove both waits.
     assert cleanup_calls == 1
+    assert contended_persist_events_attempts == 1
+    assert contended_finalize_run_attempts == 1
+    assert (
+        contended_persist_events_attempts + contended_finalize_run_attempts
+        == expected_contended_history_write_attempts
+    )
     assert not (short_state_directory / "history-contention").exists()
-    record = list_runs(root=history_root)[0]
+    records = list_runs(root=history_root)
+    assert len(records) == 1
+    record = records[0]
+    assert (record.ended_at, record.result, record.stop_reason) == (None, None, None)
     assert record.result is None
     assert record.ended_at is None
+    assert minimum_contention_elapsed_seconds <= elapsed < aggregate_upper_bound_seconds
 
 
 @pytest.mark.asyncio
