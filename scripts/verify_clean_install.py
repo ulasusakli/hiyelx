@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import select
 import shutil
+import signal
+import socket
+import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -14,6 +19,7 @@ import uuid
 import zipfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from email.parser import BytesParser
 from email.policy import default
 from pathlib import Path
@@ -31,6 +37,11 @@ RUNTIME_SESSION = "clean-install"
 SECOND_RUNTIME_SESSION = "clean-install-two"
 THIRD_RUNTIME_SESSION = "clean-install-three"
 FOURTH_RUNTIME_SESSION = "clean-install-four"
+INTERRUPT_RUNTIME_SESSION = "clean-int"
+CRASH_RUNTIME_SESSION = "clean-crash"
+NEGATIVE_RUNTIME_SESSION = "clean-negative"
+CLEANUP_RUNTIME_SESSION = "clean-cleanup"
+INITIALIZATION_LOCK_RUNTIME_SESSION = "clean-init-lock"
 UNKNOWN_RUN_ID = "00000000-0000-4000-8000-000000000000"
 EXPECTED_RUNTIME_READY = (
     b"session=clean-install",
@@ -62,15 +73,38 @@ HISTORY_SUCCESS_MARKERS = (
     "history-prune=passed",
     "history-artifact-cleanup=passed",
 )
-RTO4_B1_SUCCESS_MARKERS = (
+_RTO4_VERIFICATION_SUCCESS_MARKERS = (
     "rto4-wheel-built=passed",
     "rto4-source-isolation=passed",
     "rto4-env=passed",
     "rto4-events=passed",
+    "rto4-interrupt=passed",
+    "rto4-crash=passed",
     "rto4-prune=passed",
     "rto4-multi=passed",
+    "rto4-negative=passed",
+    "rto4-sanitize=passed",
+    "rto4-cleanup=passed",
+    "rto4-automated-acceptance=passed",
 )
 _RUN_NOT_FOUND = b"error: runtime run is not found\n"
+_INVALID_SESSION = b"error: runtime session ID is invalid\n"
+_INVALID_CONFIGURATION = b"error: runtime configuration is invalid\n"
+_SESSION_ALREADY_RUNNING = b"error: runtime session is already running\n"
+_SESSION_NOT_RUNNING = b"error: runtime session is not running\n"
+_CONTROL_FAILED = b"error: runtime control failed\n"
+_HISTORY_FAILED = b"error: runtime history failed\n"
+_CLEANUP_FAILED = b"error: runtime cleanup failed\n"
+_INVALID_REQUEST_REPLY = (
+    b'{"error":{"code":"invalid_request","message":"control request is invalid"},'
+    b'"ok":false,"protocol_version":1}\n'
+)
+_UNKNOWN_COMMAND_REPLY = (
+    b'{"error":{"code":"unknown_command","message":"control command is unknown"},'
+    b'"ok":false,"protocol_version":1}\n'
+)
+_FAULT_TIMEOUT_SECONDS = 3.0
+_product_evidence: list[bytes] | None = None
 _SUCCESS_EVENT_SEQUENCE = (
     ("runtime_start", "requested", "runtime start requested"),
     ("resource_start", "attempted", "resource start attempted"),
@@ -117,13 +151,20 @@ class CommandResult:
     stderr: bytes
 
 
+@dataclass(frozen=True, slots=True)
+class _CleanupFaultTrace:
+    cleanup_calls: tuple[str, ...]
+    session_cleanup_calls: tuple[bool, ...]
+    persist_calls: int
+
+
 CommandRunner = Callable[[Sequence[str], Path, Mapping[str, str]], CommandResult]
 
 
 def main() -> int:
     """Run the clean-install gate with concise, sanitized status output."""
     try:
-        wheel_name = run_clean_install_verification()
+        wheel_name = _run_with_product_evidence()
     except KeyboardInterrupt:
         print("error: clean-install verification interrupted", file=sys.stderr)
         return FAILURE
@@ -140,9 +181,19 @@ def main() -> int:
     for marker in HISTORY_SUCCESS_MARKERS:
         print(marker)
     print("clean-install=passed")
-    for marker in RTO4_B1_SUCCESS_MARKERS:
+    for marker in _RTO4_VERIFICATION_SUCCESS_MARKERS:
         print(marker)
     return SUCCESS
+
+
+def _run_with_product_evidence() -> str:
+    global _product_evidence
+    previous_evidence = _product_evidence
+    _product_evidence = []
+    try:
+        return run_clean_install_verification()
+    finally:
+        _product_evidence = previous_evidence
 
 
 def run_clean_install_verification(
@@ -266,10 +317,7 @@ def run_clean_install_verification(
             environment_sensitive=False,
         )
         if _strip_one_final_newline(scaffolded.stdout) != (
-            b"scaffold=motor-driver\n"
-            b"package=acme_motor_driver\n"
-            b"model=motor.acme.reference\n"
-            b"files=6"
+            b"scaffold=motor-driver\npackage=acme_motor_driver\nmodel=motor.acme.reference\nfiles=6"
         ):
             raise VerificationFailure
         assert_scaffold_layout(scaffold_path)
@@ -297,6 +345,7 @@ def run_clean_install_verification(
             verify_installed_runtime_workflow(
                 executable,
                 copied_config,
+                python=python,
                 workspace=workspace,
                 environment=environment,
             )
@@ -315,6 +364,34 @@ def verify_installed_runtime_workflow(
     executable: Path,
     config_path: Path,
     *,
+    python: Path,
+    workspace: Path,
+    environment: Mapping[str, str],
+) -> None:
+    """Audit all product output while running the installed RTO-4 workflow."""
+    global _product_evidence
+    previous_evidence = _product_evidence
+    owns_evidence = previous_evidence is None
+    if owns_evidence:
+        _product_evidence = []
+    try:
+        _verify_installed_runtime_workflow(
+            executable,
+            config_path,
+            python=python,
+            workspace=workspace,
+            environment=environment,
+        )
+    finally:
+        if owns_evidence:
+            _product_evidence = previous_evidence
+
+
+def _verify_installed_runtime_workflow(
+    executable: Path,
+    config_path: Path,
+    *,
+    python: Path,
     workspace: Path,
     environment: Mapping[str, str],
 ) -> None:
@@ -335,6 +412,11 @@ def verify_installed_runtime_workflow(
             SECOND_RUNTIME_SESSION,
             THIRD_RUNTIME_SESSION,
             FOURTH_RUNTIME_SESSION,
+            INTERRUPT_RUNTIME_SESSION,
+            CRASH_RUNTIME_SESSION,
+            NEGATIVE_RUNTIME_SESSION,
+            CLEANUP_RUNTIME_SESSION,
+            INITIALIZATION_LOCK_RUNTIME_SESSION,
         ):
             _assert_short_control_path(Path(state_name), session)
         owners: list[tuple[subprocess.Popen[bytes], str]] = []
@@ -459,9 +541,7 @@ def verify_installed_runtime_workflow(
             )
             if third_owner.pid == fourth_owner.pid:
                 raise VerificationFailure
-            _assert_distinct_canonical_run_ids(
-                (first_run, second_run, third_run, fourth_run)
-            )
+            _assert_distinct_canonical_run_ids((first_run, second_run, third_run, fourth_run))
             _verify_b1_active_safe_prune(
                 executable,
                 removed_run=first_run,
@@ -525,10 +605,54 @@ def verify_installed_runtime_workflow(
             )
             if len(first_events) != len(second_events):
                 raise VerificationFailure
-            if not (
-                len(second_events) == len(third_events) == len(fourth_events)
-            ):
+            if not (len(second_events) == len(third_events) == len(fourth_events)):
                 raise VerificationFailure
+
+            _verify_installed_interrupt_journey(
+                executable,
+                config_path,
+                session=INTERRUPT_RUNTIME_SESSION,
+                workspace=workspace,
+                environment=runtime_environment,
+                state_root=Path(state_name),
+                cleanup_registry=owners,
+            )
+            _verify_installed_crash_recovery_journey(
+                executable,
+                config_path,
+                session=CRASH_RUNTIME_SESSION,
+                workspace=workspace,
+                environment=runtime_environment,
+                state_root=Path(state_name),
+                cleanup_registry=owners,
+            )
+            _verify_installed_negative_acceptance(
+                executable,
+                config_path,
+                session=NEGATIVE_RUNTIME_SESSION,
+                workspace=workspace,
+                environment=runtime_environment,
+                state_root=Path(state_name),
+                history_root=history_root,
+                cleanup_registry=owners,
+            )
+            _verify_installed_cleanup_failure(
+                python,
+                executable,
+                config_path,
+                workspace=workspace,
+                environment=runtime_environment,
+                state_root=Path(state_name),
+                cleanup_registry=owners,
+            )
+            _verify_sanitized_product_outputs(
+                forbidden_paths=(
+                    workspace,
+                    Path(state_name),
+                    history_root,
+                    config_path,
+                )
+            )
         except (OSError, subprocess.TimeoutExpired) as error:
             primary_error = VerificationFailure()
             primary_error.__cause__ = error
@@ -636,6 +760,7 @@ def _verify_active_runtime(
     executable: Path,
     *,
     session: str,
+    excluded_run_ids: Sequence[str] = (),
     workspace: Path,
     environment: Mapping[str, str],
 ) -> str:
@@ -668,7 +793,11 @@ def _verify_active_runtime(
     runs = [cast(dict[str, object], run) for run in raw_runs if isinstance(run, dict)]
     if len(runs) != len(raw_runs):
         raise VerificationFailure
-    matching = [run for run in runs if run.get("session_id") == session]
+    matching = [
+        run
+        for run in runs
+        if run.get("session_id") == session and run.get("run_id") not in excluded_run_ids
+    ]
     if len(matching) != 1 or matching[0].get("result") is not None:
         raise VerificationFailure
     run_id = matching[0].get("run_id")
@@ -718,9 +847,7 @@ def _stop_installed_owner(
     if stopped.stdout != expected or stopped.stderr:
         raise VerificationFailure
     try:
-        remaining_stdout, remaining_stderr = owner.communicate(
-            timeout=_OWNER_EXIT_TIMEOUT_SECONDS
-        )
+        remaining_stdout, remaining_stderr = owner.communicate(timeout=_OWNER_EXIT_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired as error:
         _cleanup_owner(
             owner,
@@ -730,12 +857,190 @@ def _stop_installed_owner(
             environment=environment,
         )
         raise VerificationFailure from error
+    _record_product_output(remaining_stdout, remaining_stderr)
     if (
         owner.returncode != SUCCESS
         or remaining_stdout != b"runtime=stopped\n"
         or remaining_stderr
         or (state_root / session).exists()
     ):
+        raise VerificationFailure
+
+
+def _verify_installed_interrupt_journey(
+    executable: Path,
+    config_path: Path,
+    *,
+    session: str,
+    workspace: Path,
+    environment: Mapping[str, str],
+    state_root: Path,
+    cleanup_registry: list[tuple[subprocess.Popen[bytes], str]],
+) -> None:
+    owner = _start_installed_owner(
+        executable,
+        config_path,
+        session=session,
+        workspace=workspace,
+        environment=environment,
+        cleanup_registry=cleanup_registry,
+    )
+    run_id = _verify_active_runtime(
+        executable,
+        session=session,
+        workspace=workspace,
+        environment=environment,
+    )
+    owner.send_signal(signal.SIGINT)
+    _verify_owner_exit(
+        owner,
+        executable,
+        session=session,
+        workspace=workspace,
+        environment=environment,
+        expected_returncode=SUCCESS,
+        expected_stdout=b"runtime=stopped\n",
+        expected_stderr=b"",
+    )
+    if (state_root / session).exists():
+        raise VerificationFailure
+    cleanup_registry.remove((owner, session))
+    _verify_interrupted_run(
+        executable,
+        run_id,
+        workspace=workspace,
+        environment=environment,
+    )
+
+
+def _verify_installed_crash_recovery_journey(
+    executable: Path,
+    config_path: Path,
+    *,
+    session: str,
+    workspace: Path,
+    environment: Mapping[str, str],
+    state_root: Path,
+    cleanup_registry: list[tuple[subprocess.Popen[bytes], str]],
+) -> None:
+    crashed_owner = _start_installed_owner(
+        executable,
+        config_path,
+        session=session,
+        workspace=workspace,
+        environment=environment,
+        cleanup_registry=cleanup_registry,
+    )
+    crashed_run = _verify_active_runtime(
+        executable,
+        session=session,
+        workspace=workspace,
+        environment=environment,
+    )
+    crashed_owner.kill()
+    _verify_owner_exit(
+        crashed_owner,
+        executable,
+        session=session,
+        workspace=workspace,
+        environment=environment,
+        expected_returncode=None,
+        expected_stdout=b"",
+        expected_stderr=b"",
+        require_signal_returncode=True,
+    )
+    cleanup_registry.remove((crashed_owner, session))
+    crashed_document, crashed_events = _verify_incomplete_run(
+        executable,
+        crashed_run,
+        session=session,
+        workspace=workspace,
+        environment=environment,
+    )
+
+    recovery_owner = _start_installed_owner(
+        executable,
+        config_path,
+        session=session,
+        workspace=workspace,
+        environment=environment,
+        cleanup_registry=cleanup_registry,
+    )
+    recovery_run = _verify_active_runtime(
+        executable,
+        session=session,
+        excluded_run_ids=(crashed_run,),
+        workspace=workspace,
+        environment=environment,
+    )
+    _assert_distinct_canonical_run_ids((crashed_run, recovery_run))
+    _assert_incomplete_run_unchanged(
+        executable,
+        crashed_run,
+        session=session,
+        expected_document=crashed_document,
+        expected_events=crashed_events,
+        workspace=workspace,
+        environment=environment,
+    )
+    _stop_installed_owner(
+        recovery_owner,
+        executable,
+        session=session,
+        workspace=workspace,
+        environment=environment,
+        state_root=state_root,
+    )
+    cleanup_registry.remove((recovery_owner, session))
+    _verify_completed_run(
+        executable,
+        recovery_run,
+        workspace=workspace,
+        environment=environment,
+    )
+    _assert_incomplete_run_unchanged(
+        executable,
+        crashed_run,
+        session=session,
+        expected_document=crashed_document,
+        expected_events=crashed_events,
+        workspace=workspace,
+        environment=environment,
+    )
+    if (state_root / session).exists():
+        raise VerificationFailure
+
+
+def _verify_owner_exit(
+    owner: subprocess.Popen[bytes],
+    executable: Path,
+    *,
+    session: str,
+    workspace: Path,
+    environment: Mapping[str, str],
+    expected_returncode: int | None,
+    expected_stdout: bytes,
+    expected_stderr: bytes,
+    require_signal_returncode: bool = False,
+) -> None:
+    try:
+        remaining_stdout, remaining_stderr = owner.communicate(timeout=_OWNER_EXIT_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as error:
+        _cleanup_owner(
+            owner,
+            executable,
+            session=session,
+            workspace=workspace,
+            environment=environment,
+        )
+        raise VerificationFailure from error
+    _record_product_output(remaining_stdout, remaining_stderr)
+    if require_signal_returncode:
+        if owner.returncode is None or owner.returncode >= 0:
+            raise VerificationFailure
+    elif owner.returncode != expected_returncode:
+        raise VerificationFailure
+    if remaining_stdout != expected_stdout or remaining_stderr != expected_stderr:
         raise VerificationFailure
 
 
@@ -771,6 +1076,103 @@ def _verify_completed_run(
     return events
 
 
+def _verify_interrupted_run(
+    executable: Path,
+    run_id: str,
+    *,
+    workspace: Path,
+    environment: Mapping[str, str],
+) -> list[dict[str, object]]:
+    run = _verify_run_queryable(
+        executable,
+        run_id,
+        expected_result="interrupted",
+        workspace=workspace,
+        environment=environment,
+    )
+    if (
+        run.get("stop_reason") != "sigint"
+        or not _is_canonical_timestamp(run.get("ended_at"))
+        or run.get("event_high_water_mark") != 11
+    ):
+        raise VerificationFailure
+    events = _load_event_page(
+        _run_command(
+            (str(executable), "runtime", "events", "--run", run_id, "--json"),
+            workspace,
+            environment,
+        ),
+        run_id=run_id,
+    )
+    _assert_exact_success_events(events, count=12)
+    return events
+
+
+def _verify_incomplete_run(
+    executable: Path,
+    run_id: str,
+    *,
+    session: str,
+    workspace: Path,
+    environment: Mapping[str, str],
+) -> tuple[dict[str, object], list[dict[str, object]]]:
+    run = _verify_run_queryable(
+        executable,
+        run_id,
+        expected_result=None,
+        workspace=workspace,
+        environment=environment,
+    )
+    if (
+        run.get("session_id") != session
+        or run.get("ended_at") is not None
+        or run.get("stop_reason") is not None
+        or run.get("event_high_water_mark") != 3
+    ):
+        raise VerificationFailure
+    events = _load_event_page(
+        _run_command(
+            (str(executable), "runtime", "events", "--run", run_id, "--json"),
+            workspace,
+            environment,
+        ),
+        run_id=run_id,
+    )
+    _assert_exact_success_events(events, count=4)
+    return run, events
+
+
+def _assert_incomplete_run_unchanged(
+    executable: Path,
+    run_id: str,
+    *,
+    session: str,
+    expected_document: dict[str, object],
+    expected_events: list[dict[str, object]],
+    workspace: Path,
+    environment: Mapping[str, str],
+) -> None:
+    document, events = _verify_incomplete_run(
+        executable,
+        run_id,
+        session=session,
+        workspace=workspace,
+        environment=environment,
+    )
+    if document != expected_document or events != expected_events:
+        raise VerificationFailure
+
+
+def _is_canonical_timestamp(value: object) -> bool:
+    if not isinstance(value, str) or len(value) != 27 or not value.endswith("Z"):
+        return False
+    try:
+        parsed = datetime.fromisoformat(value.removesuffix("Z") + "+00:00")
+    except ValueError:
+        return False
+    return parsed.strftime("%Y-%m-%dT%H:%M:%S.%fZ") == value
+
+
 def _verify_run_queryable(
     executable: Path,
     run_id: str,
@@ -789,6 +1191,1005 @@ def _verify_run_queryable(
     if run.get("run_id") != run_id or run.get("result") != expected_result:
         raise VerificationFailure
     return run
+
+
+def _verify_installed_negative_acceptance(
+    executable: Path,
+    config_path: Path,
+    *,
+    session: str,
+    workspace: Path,
+    environment: Mapping[str, str],
+    state_root: Path,
+    history_root: Path,
+    cleanup_registry: list[tuple[subprocess.Popen[bytes], str]],
+) -> None:
+    """Exercise the installed CLI, wire, control-path, and history fault matrix."""
+    fault_root = workspace / "rto4-faults"
+    fault_root.mkdir(mode=0o700)
+    _verify_invalid_cli_inputs(
+        executable,
+        config_path,
+        workspace=workspace,
+        environment=environment,
+        state_root=state_root,
+        history_root=history_root,
+    )
+
+    owner = _start_installed_owner(
+        executable,
+        config_path,
+        session=session,
+        workspace=workspace,
+        environment=environment,
+        cleanup_registry=cleanup_registry,
+    )
+    run_id = _verify_active_runtime(
+        executable,
+        session=session,
+        workspace=workspace,
+        environment=environment,
+    )
+    before_run, before_events = _verify_incomplete_run(
+        executable,
+        run_id,
+        session=session,
+        workspace=workspace,
+        environment=environment,
+    )
+    _require_bounded_exact_result(
+        (str(executable), "runtime", "start", str(config_path), "--session", session),
+        workspace=workspace,
+        environment=environment,
+        returncode=4,
+        stdout=b"",
+        stderr=_SESSION_ALREADY_RUNNING,
+    )
+    _assert_incomplete_run_unchanged(
+        executable,
+        run_id,
+        session=session,
+        expected_document=before_run,
+        expected_events=before_events,
+        workspace=workspace,
+        environment=environment,
+    )
+    _verify_private_control_probes(
+        state_root / session / "control.sock",
+        session=session,
+    )
+    if (
+        _verify_active_runtime(
+            executable,
+            session=session,
+            workspace=workspace,
+            environment=environment,
+        )
+        != run_id
+    ):
+        raise VerificationFailure
+    _assert_incomplete_run_unchanged(
+        executable,
+        run_id,
+        session=session,
+        expected_document=before_run,
+        expected_events=before_events,
+        workspace=workspace,
+        environment=environment,
+    )
+    _stop_installed_owner(
+        owner,
+        executable,
+        session=session,
+        workspace=workspace,
+        environment=environment,
+        state_root=state_root,
+    )
+    cleanup_registry.remove((owner, session))
+    _verify_completed_run(
+        executable,
+        run_id,
+        workspace=workspace,
+        environment=environment,
+    )
+
+    _verify_control_fault_fixtures(
+        executable,
+        fault_root=fault_root,
+        workspace=workspace,
+        environment=environment,
+    )
+    _verify_history_fault_fixtures(
+        executable,
+        source_history=history_root,
+        fault_root=fault_root,
+        workspace=workspace,
+        environment=environment,
+    )
+    _verify_busy_history_fault(
+        executable,
+        source_history=history_root,
+        fault_root=fault_root,
+        workspace=workspace,
+        environment=environment,
+    )
+    _verify_initialization_lock_fault(
+        executable,
+        config_path,
+        fault_root=fault_root,
+        state_root=state_root,
+        workspace=workspace,
+        environment=environment,
+    )
+
+
+def _verify_invalid_cli_inputs(
+    executable: Path,
+    config_path: Path,
+    *,
+    workspace: Path,
+    environment: Mapping[str, str],
+    state_root: Path,
+    history_root: Path,
+) -> None:
+    before = (_tree_snapshot(state_root), _tree_snapshot(history_root))
+    invalid_config = workspace / "invalid-runtime.yaml"
+    invalid_config.write_text("schema_version: [\n", encoding="utf-8")
+    unsupported_config = workspace / "unsupported-runtime.yaml"
+    unsupported_config.write_text(
+        'schema_version: "1"\nresources:\n'
+        "  - identity: unsupported_motor\n"
+        "    model: motor.unsupported\n"
+        "    settings: {}\n",
+        encoding="utf-8",
+    )
+    exact_cases = (
+        (("runtime", "status", "--session", "../private"), 3, _INVALID_SESSION),
+        (("runtime", "stop", "--session", "../private"), 3, _INVALID_SESSION),
+        (
+            ("runtime", "start", str(config_path), "--session", "../private"),
+            3,
+            _INVALID_SESSION,
+        ),
+        (
+            ("runtime", "start", str(invalid_config), "--session", "valid"),
+            2,
+            _INVALID_CONFIGURATION,
+        ),
+        (
+            ("runtime", "start", str(unsupported_config), "--session", "valid"),
+            2,
+            _INVALID_CONFIGURATION,
+        ),
+        (("runtime", "status", "--session", "missing"), 5, _SESSION_NOT_RUNNING),
+        (("runtime", "stop", "--session", "missing"), 5, _SESSION_NOT_RUNNING),
+        (("runtime", "runs", "show", UNKNOWN_RUN_ID), 11, _RUN_NOT_FOUND),
+        (("runtime", "runs", "show", "not-a-run"), 11, _RUN_NOT_FOUND),
+        (("runtime", "events", "--run", UNKNOWN_RUN_ID), 11, _RUN_NOT_FOUND),
+        (("runtime", "events", "--run", "not-a-run"), 11, _RUN_NOT_FOUND),
+    )
+    for arguments, returncode, stderr in exact_cases:
+        _require_bounded_exact_result(
+            (str(executable), *arguments),
+            workspace=workspace,
+            environment=environment,
+            returncode=returncode,
+            stdout=b"",
+            stderr=stderr,
+        )
+
+    parser_cases = (
+        (("runtime", "runs", "list", "--limit", value), _list_limit_error())
+        for value in ("0", "101", "not-an-integer")
+    )
+    event_after_cases = (
+        (("runtime", "events", "--run", UNKNOWN_RUN_ID, "--after", value), _event_after_error())
+        for value in ("-2", "not-an-integer")
+    )
+    event_limit_cases = (
+        (("runtime", "events", "--run", UNKNOWN_RUN_ID, "--limit", value), _event_limit_error())
+        for value in ("0", "1001")
+    )
+    prune_cases = (
+        (("runtime", "runs", "prune"), _prune_missing_error()),
+        (("runtime", "runs", "prune", "--keep", "-1"), _prune_value_error()),
+        (
+            ("runtime", "runs", "prune", "--keep", "9223372036854775808"),
+            _prune_value_error(),
+        ),
+        (
+            ("runtime", "runs", "prune", "--keep", "not-an-integer"),
+            _prune_value_error(),
+        ),
+    )
+    for arguments, stderr in (
+        *parser_cases,
+        *event_after_cases,
+        *event_limit_cases,
+        *prune_cases,
+    ):
+        _require_bounded_exact_result(
+            (str(executable), *arguments),
+            workspace=workspace,
+            environment=environment,
+            returncode=2,
+            stdout=b"",
+            stderr=stderr,
+        )
+    if before != (_tree_snapshot(state_root), _tree_snapshot(history_root)):
+        raise VerificationFailure
+
+
+def _list_limit_error() -> bytes:
+    return (
+        b"usage: hiyelx runtime runs list [-h] [--limit LIMIT] [--json]\n"
+        b"hiyelx runtime runs list: error: argument --limit: "
+        b"limit must be between 1 and 100\n"
+    )
+
+
+def _event_after_error() -> bytes:
+    return (
+        b"usage: hiyelx runtime events [-h] --run RUN_ID [--after AFTER] [--limit LIMIT]\n"
+        b"                             [--json]\n"
+        b"hiyelx runtime events: error: argument --after: "
+        b"after must be an integer at or above -1\n"
+    )
+
+
+def _event_limit_error() -> bytes:
+    return (
+        b"usage: hiyelx runtime events [-h] --run RUN_ID [--after AFTER] [--limit LIMIT]\n"
+        b"                             [--json]\n"
+        b"hiyelx runtime events: error: argument --limit: "
+        b"limit must be between 1 and 1000\n"
+    )
+
+
+def _prune_missing_error() -> bytes:
+    return (
+        b"usage: hiyelx runtime runs prune [-h] --keep KEEP\n"
+        b"hiyelx runtime runs prune: error: the following arguments are required: --keep\n"
+    )
+
+
+def _prune_value_error() -> bytes:
+    return (
+        b"usage: hiyelx runtime runs prune [-h] --keep KEEP\n"
+        b"hiyelx runtime runs prune: error: argument --keep: "
+        b"keep must be between 0 and 9223372036854775807\n"
+    )
+
+
+def _verify_private_control_probes(socket_path: Path, *, session: str) -> None:
+    valid_without_newline = json.dumps(
+        {"command": "status", "protocol_version": 1, "session": session},
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("ascii")
+    invalid_messages = (
+        (b'{"command":\n', False),
+        (valid_without_newline, True),
+        (b'{"command":"status","protocol_version":1}\n', False),
+        (b'{"command":1,"protocol_version":1,"session":"' + session.encode() + b'"}\n', False),
+        (
+            b'{"command":"status","command":"status","protocol_version":1,"session":"'
+            + session.encode()
+            + b'"}\n',
+            False,
+        ),
+        (
+            b'{"command":"status","protocol_version":true,"session":"' + session.encode() + b'"}\n',
+            False,
+        ),
+        (
+            b'{"command":"status","protocol_version":1.0,"session":"' + session.encode() + b'"}\n',
+            False,
+        ),
+        (
+            b'{"command":"status","protocol_version":2,"session":"' + session.encode() + b'"}\n',
+            False,
+        ),
+        (b"x" * 8193 + b"\n", False),
+    )
+    for message, shutdown_write in invalid_messages:
+        reply = _raw_control_request(
+            socket_path,
+            message,
+            shutdown_write=shutdown_write,
+        )
+        if reply != _INVALID_REQUEST_REPLY:
+            raise VerificationFailure
+        _record_product_output(reply)
+    unknown = (
+        json.dumps(
+            {"command": "unknown", "protocol_version": 1, "session": session},
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("ascii")
+        + b"\n"
+    )
+    reply = _raw_control_request(socket_path, unknown, shutdown_write=False)
+    if reply != _UNKNOWN_COMMAND_REPLY:
+        raise VerificationFailure
+    _record_product_output(reply)
+
+
+def _raw_control_request(
+    socket_path: Path,
+    message: bytes,
+    *,
+    shutdown_write: bool,
+) -> bytes:
+    connection = socket.socket(socket.AF_UNIX)
+    connection.settimeout(_FAULT_TIMEOUT_SECONDS)
+    response = bytearray()
+    try:
+        connection.connect(str(socket_path))
+        connection.sendall(message)
+        if shutdown_write:
+            connection.shutdown(socket.SHUT_WR)
+        while not response.endswith(b"\n"):
+            chunk = connection.recv(8193)
+            if not chunk or len(response) + len(chunk) > 8193:
+                raise VerificationFailure
+            response.extend(chunk)
+        if connection.recv(1) != b"":
+            raise VerificationFailure
+    except (OSError, TimeoutError) as error:
+        raise VerificationFailure from error
+    finally:
+        connection.close()
+    return bytes(response)
+
+
+def _verify_control_fault_fixtures(
+    executable: Path,
+    *,
+    fault_root: Path,
+    workspace: Path,
+    environment: Mapping[str, str],
+) -> None:
+    control_root = fault_root / "control"
+    control_root.mkdir(mode=0o700)
+    cases: list[Path] = []
+
+    unsafe = control_root / "unsafe-root"
+    unsafe.mkdir(mode=0o755)
+    cases.append(unsafe)
+
+    symlink_root = control_root / "symlink-root"
+    symlink_root.mkdir(mode=0o700)
+    target = control_root / "symlink-target"
+    target.mkdir(mode=0o700)
+    (symlink_root / "fault").symlink_to(target, target_is_directory=True)
+    cases.append(symlink_root)
+
+    wrong_type = control_root / "wrong-type-root"
+    wrong_type.mkdir(mode=0o700)
+    (wrong_type / "fault").write_bytes(b"keep")
+    os.chmod(wrong_type / "fault", 0o600)
+    cases.append(wrong_type)
+
+    missing_lock = control_root / "missing-lock-root"
+    (missing_lock / "fault").mkdir(parents=True, mode=0o700)
+    cases.append(missing_lock)
+
+    unknown = control_root / "unknown-root"
+    unknown_session = unknown / "fault"
+    unknown_session.mkdir(parents=True, mode=0o700)
+    (unknown_session / "owner.lock").write_bytes(b"")
+    (unknown_session / "unknown.entry").write_bytes(b"keep")
+    os.chmod(unknown_session / "owner.lock", 0o600)
+    os.chmod(unknown_session / "unknown.entry", 0o600)
+    cases.append(unknown)
+
+    unsafe_manifest = control_root / "unsafe-manifest-root"
+    unsafe_session = unsafe_manifest / "fault"
+    unsafe_session.mkdir(parents=True, mode=0o700)
+    (unsafe_session / "owner.lock").write_bytes(b"")
+    (unsafe_session / "manifest.json").write_bytes(b"keep")
+    os.chmod(unsafe_session / "owner.lock", 0o600)
+    os.chmod(unsafe_session / "manifest.json", 0o644)
+    cases.append(unsafe_manifest)
+
+    for root in cases:
+        before = _tree_snapshot(control_root)
+        fault_environment = dict(environment)
+        fault_environment["HIYELX_RUNTIME_STATE_DIR"] = str(root)
+        _require_bounded_exact_result(
+            (str(executable), "runtime", "status", "--session", "fault"),
+            workspace=workspace,
+            environment=fault_environment,
+            returncode=6,
+            stdout=b"",
+            stderr=_CONTROL_FAILED,
+        )
+        if _tree_snapshot(control_root) != before:
+            raise VerificationFailure
+
+
+def _verify_history_fault_fixtures(
+    executable: Path,
+    *,
+    source_history: Path,
+    fault_root: Path,
+    workspace: Path,
+    environment: Mapping[str, str],
+) -> None:
+    history_fixtures = fault_root / "history"
+    history_fixtures.mkdir(mode=0o700)
+    source_connection = sqlite3.connect(source_history / "history.sqlite3")
+    try:
+        event_row = source_connection.execute(
+            "SELECT run_id FROM events ORDER BY run_id, sequence LIMIT 1"
+        ).fetchone()
+    finally:
+        source_connection.close()
+    if event_row is None or not isinstance(event_row[0], str):
+        raise VerificationFailure
+    event_run_id = event_row[0]
+    unsafe = history_fixtures / "unsafe-root"
+    unsafe.mkdir(mode=0o755)
+
+    unsafe_database_mode, unsafe_lock_mode = _create_unsafe_history_mode_fixtures(
+        source_history,
+        history_fixtures=history_fixtures,
+    )
+
+    symlink_root = history_fixtures / "symlink"
+    symlink_root.mkdir(mode=0o700)
+    target = history_fixtures / "symlink-target"
+    target.write_bytes(b"keep")
+    os.chmod(target, 0o600)
+    (symlink_root / "history.sqlite3").symlink_to(target)
+
+    wrong_type = history_fixtures / "wrong-type"
+    wrong_type.mkdir(mode=0o700)
+    (wrong_type / "history.sqlite3").mkdir(mode=0o700)
+
+    unknown = history_fixtures / "unknown"
+    unknown.mkdir(mode=0o700)
+    (unknown / "unknown.entry").write_bytes(b"keep")
+    os.chmod(unknown / "unknown.entry", 0o600)
+
+    fixture_mutators: tuple[tuple[str, Callable[[Path], None]], ...] = (
+        ("user-version", lambda database: _execute_sql(database, "PRAGMA user_version = 2")),
+        (
+            "object-drift",
+            lambda database: _execute_sql(database, "CREATE TABLE unexpected(value TEXT)"),
+        ),
+        (
+            "column-drift",
+            lambda database: _replace_schema_sql(
+                database, "runs", "package_version TEXT", "package_release TEXT"
+            ),
+        ),
+        ("index-drift", lambda database: _execute_sql(database, "DROP INDEX runs_order")),
+        (
+            "fk-drift",
+            lambda database: _replace_schema_sql(
+                database, "events", "ON DELETE CASCADE", "ON DELETE RESTRICT"
+            ),
+        ),
+        (
+            "run-corrupt",
+            lambda database: _execute_sql(
+                database,
+                "PRAGMA ignore_check_constraints = ON; UPDATE runs SET session_id = '../private'",
+            ),
+        ),
+        (
+            "event-corrupt",
+            lambda database: _execute_sql(
+                database,
+                "PRAGMA ignore_check_constraints = ON; "
+                "UPDATE events SET summary = 'private' || char(10) || 'summary' "
+                "WHERE sequence = 0",
+            ),
+        ),
+        (
+            "event-gap",
+            lambda database: _execute_sql(database, "DELETE FROM events WHERE sequence = 1"),
+        ),
+        (
+            "watermark-corrupt",
+            lambda database: _execute_sql(
+                database,
+                "PRAGMA ignore_check_constraints = ON; UPDATE runs SET event_high_water_mark = 10",
+            ),
+        ),
+    )
+    roots: list[tuple[Path, tuple[str, ...]]] = [
+        (root, ("runtime", "runs", "list"))
+        for root in (
+            unsafe,
+            unsafe_database_mode,
+            unsafe_lock_mode,
+            symlink_root,
+            wrong_type,
+            unknown,
+        )
+    ]
+    for name, mutate in fixture_mutators:
+        root = history_fixtures / name
+        shutil.copytree(source_history, root)
+        mutate(root / "history.sqlite3")
+        arguments = _history_fault_arguments(name, event_run_id=event_run_id)
+        roots.append((root, arguments))
+
+    for root, arguments in roots:
+        before = _tree_snapshot(root)
+        fault_environment = dict(environment)
+        fault_environment["HIYELX_RUNTIME_HISTORY_DIR"] = str(root)
+        _require_bounded_exact_result(
+            (str(executable), *arguments),
+            workspace=workspace,
+            environment=fault_environment,
+            returncode=10,
+            stdout=b"",
+            stderr=_HISTORY_FAILED,
+        )
+        if _tree_snapshot(root) != before:
+            raise VerificationFailure
+
+
+def _create_unsafe_history_mode_fixtures(
+    source_history: Path,
+    *,
+    history_fixtures: Path,
+) -> tuple[Path, Path]:
+    unsafe_database_mode = history_fixtures / "unsafe-database-mode"
+    shutil.copytree(source_history, unsafe_database_mode)
+    database = unsafe_database_mode / "history.sqlite3"
+    if not database.is_file():
+        raise VerificationFailure
+    os.chmod(database, 0o644)
+
+    unsafe_lock_mode = history_fixtures / "unsafe-lock-mode"
+    shutil.copytree(source_history, unsafe_lock_mode)
+    lock = unsafe_lock_mode / "history.lock"
+    if not lock.is_file():
+        raise VerificationFailure
+    os.chmod(lock, 0o644)
+    return unsafe_database_mode, unsafe_lock_mode
+
+
+def _history_fault_arguments(name: str, *, event_run_id: str) -> tuple[str, ...]:
+    if name in {"event-corrupt", "event-gap", "watermark-corrupt"}:
+        return ("runtime", "events", "--run", event_run_id)
+    return ("runtime", "runs", "list")
+
+
+def _execute_sql(database: Path, script: str) -> None:
+    connection = sqlite3.connect(database)
+    try:
+        connection.executescript(script)
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _replace_schema_sql(
+    database: Path,
+    object_name: str,
+    old: str,
+    new: str,
+) -> None:
+    connection = sqlite3.connect(database)
+    try:
+        row = connection.execute(
+            "SELECT sql FROM sqlite_schema WHERE name = ?", (object_name,)
+        ).fetchone()
+        if row is None or not isinstance(row[0], str) or old not in row[0]:
+            raise VerificationFailure
+        connection.execute("PRAGMA writable_schema = ON")
+        connection.execute(
+            "UPDATE sqlite_schema SET sql = ? WHERE name = ?",
+            (row[0].replace(old, new), object_name),
+        )
+        version = connection.execute("PRAGMA schema_version").fetchone()
+        if version is None or type(version[0]) is not int:
+            raise VerificationFailure
+        connection.execute(f"PRAGMA schema_version = {version[0] + 1}")
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _verify_busy_history_fault(
+    executable: Path,
+    *,
+    source_history: Path,
+    fault_root: Path,
+    workspace: Path,
+    environment: Mapping[str, str],
+) -> None:
+    root = fault_root / "history-busy"
+    shutil.copytree(source_history, root)
+    database = root / "history.sqlite3"
+    holder_script = """
+import sqlite3
+import sys
+import time
+
+connection = sqlite3.connect(sys.argv[1], isolation_level=None)
+connection.execute("PRAGMA journal_mode = WAL")
+connection.execute("BEGIN IMMEDIATE")
+connection.execute(
+    "UPDATE runs SET run_id = run_id WHERE rowid = (SELECT rowid FROM runs LIMIT 1)"
+)
+print("writer-lock=ready", flush=True)
+time.sleep(30)
+"""
+    holder = subprocess.Popen(
+        (str(executable.parent / "python"), "-c", holder_script, str(database)),
+        cwd=workspace,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        if _read_fault_holder_ready(holder) != b"writer-lock=ready\n":
+            raise VerificationFailure
+        reader = sqlite3.connect(database)
+        try:
+            count = reader.execute("SELECT COUNT(*) FROM runs").fetchone()
+        finally:
+            reader.close()
+        fault_environment = dict(environment)
+        fault_environment["HIYELX_RUNTIME_HISTORY_DIR"] = str(root)
+        _require_bounded_exact_result(
+            (str(executable), "runtime", "runs", "prune", "--keep", "0"),
+            workspace=workspace,
+            environment=fault_environment,
+            returncode=10,
+            stdout=b"",
+            stderr=_HISTORY_FAILED,
+        )
+    finally:
+        _reap_fault_holder(holder)
+    reader = sqlite3.connect(database)
+    try:
+        if reader.execute("SELECT COUNT(*) FROM runs").fetchone() != count:
+            raise VerificationFailure
+    finally:
+        reader.close()
+
+
+def _read_fault_holder_ready(holder: subprocess.Popen[bytes]) -> bytes:
+    if holder.stdout is None or holder.stderr is None:
+        raise VerificationFailure
+    readable, _, _ = select.select([holder.stdout], [], [], _FAULT_TIMEOUT_SECONDS)
+    if not readable:
+        raise VerificationFailure
+    line = holder.stdout.readline()
+    if holder.poll() is not None:
+        raise VerificationFailure
+    return line
+
+
+def _reap_fault_holder(holder: subprocess.Popen[bytes]) -> None:
+    if holder.poll() is None:
+        holder.terminate()
+        try:
+            holder.wait(timeout=_CLEANUP_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            holder.kill()
+            try:
+                holder.wait(timeout=_CLEANUP_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired as error:
+                raise VerificationFailure from error
+    if holder.stdout is not None:
+        holder.stdout.close()
+    if holder.stderr is not None:
+        holder.stderr.close()
+
+
+def _verify_initialization_lock_fault(
+    executable: Path,
+    config_path: Path,
+    *,
+    fault_root: Path,
+    state_root: Path,
+    workspace: Path,
+    environment: Mapping[str, str],
+) -> None:
+    import fcntl
+
+    root = fault_root / "history-init-lock"
+    root.mkdir(mode=0o700)
+    lock = root / "history.lock"
+    lock.write_bytes(b"")
+    os.chmod(lock, 0o600)
+    descriptor = os.open(lock, os.O_RDWR)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        before = _tree_snapshot(root)
+        fault_environment = dict(environment)
+        fault_environment["HIYELX_RUNTIME_HISTORY_DIR"] = str(root)
+        _require_bounded_exact_result(
+            (
+                str(executable),
+                "runtime",
+                "start",
+                str(config_path),
+                "--session",
+                INITIALIZATION_LOCK_RUNTIME_SESSION,
+            ),
+            workspace=workspace,
+            environment=fault_environment,
+            returncode=10,
+            stdout=b"",
+            stderr=_HISTORY_FAILED,
+        )
+        if (
+            _tree_snapshot(root) != before
+            or (state_root / INITIALIZATION_LOCK_RUNTIME_SESSION).exists()
+        ):
+            raise VerificationFailure
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def _verify_installed_cleanup_failure(
+    python: Path,
+    executable: Path,
+    config_path: Path,
+    *,
+    workspace: Path,
+    environment: Mapping[str, str],
+    state_root: Path,
+    cleanup_registry: list[tuple[subprocess.Popen[bytes], str]],
+) -> _CleanupFaultTrace:
+    history_root = workspace / "cleanup-failure-history"
+    trace_path = workspace / "cleanup-failure-trace.json"
+    fault_environment = dict(environment)
+    fault_environment["HIYELX_RUNTIME_HISTORY_DIR"] = str(history_root)
+    harness = """
+import json
+import sys
+from pathlib import Path
+from hiyelx import cli
+from hiyelx.runtime import control
+
+cleanup_calls = []
+session_cleanup_calls = []
+persist_calls = []
+original_safe_stop = control.RuntimeOperations.safe_stop
+original_shutdown = control.RuntimeOperations.shutdown
+original_cleanup = control.OwnedSession.cleanup
+original_persist = control.HistoryStore.persist_events
+
+async def fail_safe_stop(operations):
+    cleanup_calls.append("safe_stop")
+    raise RuntimeError("private safe-stop failure")
+
+async def record_shutdown(operations):
+    cleanup_calls.append("shutdown")
+    await original_shutdown(operations)
+
+def fail_then_finish(owned, *, final=False):
+    session_cleanup_calls.append(final)
+    if not final:
+        return False
+    return original_cleanup(owned, final=True)
+
+def fail_secondary_persist(store, *args, **kwargs):
+    persist_calls.append(True)
+    if len(persist_calls) == 2:
+        raise RuntimeError("private secondary persistence failure")
+    return original_persist(store, *args, **kwargs)
+
+control.RuntimeOperations.safe_stop = fail_safe_stop
+control.RuntimeOperations.shutdown = record_shutdown
+control.OwnedSession.cleanup = fail_then_finish
+control.HistoryStore.persist_events = fail_secondary_persist
+code = cli.main(["runtime", "start", sys.argv[1], "--session", sys.argv[2]])
+Path(sys.argv[3]).write_text(
+    json.dumps(
+        {
+            "cleanup_calls": cleanup_calls,
+            "persist_calls": len(persist_calls),
+            "session_cleanup_calls": session_cleanup_calls,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    + "\\n",
+    encoding="utf-8",
+)
+raise SystemExit(code)
+"""
+    owner = subprocess.Popen(
+        (
+            str(python),
+            "-c",
+            harness,
+            str(config_path),
+            CLEANUP_RUNTIME_SESSION,
+            str(trace_path),
+        ),
+        cwd=workspace,
+        env=fault_environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    cleanup_registry.append((owner, CLEANUP_RUNTIME_SESSION))
+    expected = (
+        f"session={CLEANUP_RUNTIME_SESSION}".encode(),
+        b"runtime=running",
+        b"control=ready",
+    )
+    if _read_owner_lines(owner, len(expected)) != expected:
+        raise VerificationFailure
+    stop = _run_command(
+        (str(executable), "runtime", "stop", "--session", CLEANUP_RUNTIME_SESSION),
+        workspace,
+        fault_environment,
+    )
+    _require_exact_result(stop, returncode=8, stdout=b"", stderr=_CLEANUP_FAILED)
+    try:
+        remaining_stdout, remaining_stderr = owner.communicate(timeout=_OWNER_EXIT_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as error:
+        _cleanup_owner(
+            owner,
+            executable,
+            session=CLEANUP_RUNTIME_SESSION,
+            workspace=workspace,
+            environment=fault_environment,
+        )
+        raise VerificationFailure from error
+    _record_product_output(remaining_stdout, remaining_stderr)
+    try:
+        trace = _load_cleanup_fault_trace(trace_path)
+    finally:
+        trace_path.unlink(missing_ok=True)
+    if (
+        owner.returncode != 8
+        or remaining_stdout
+        or remaining_stderr != _CLEANUP_FAILED
+        or (state_root / CLEANUP_RUNTIME_SESSION).exists()
+        or trace
+        != _CleanupFaultTrace(
+            cleanup_calls=("safe_stop", "shutdown"),
+            session_cleanup_calls=(False, True),
+            persist_calls=2,
+        )
+    ):
+        raise VerificationFailure
+    cleanup_registry.remove((owner, CLEANUP_RUNTIME_SESSION))
+    document, runs = _load_run_list(
+        _run_command(
+            (str(executable), "runtime", "runs", "list", "--json"),
+            workspace,
+            fault_environment,
+        )
+    )
+    if document.get("run_count") != 1 or len(runs) != 1:
+        raise VerificationFailure
+    run = runs[0]
+    if (
+        run.get("session_id") != CLEANUP_RUNTIME_SESSION
+        or run.get("result") != "cleanup_failed"
+        or run.get("stop_reason") != "cleanup_failure"
+        or not _is_canonical_timestamp(run.get("ended_at"))
+    ):
+        raise VerificationFailure
+    return trace
+
+
+def _load_cleanup_fault_trace(path: Path) -> _CleanupFaultTrace:
+    try:
+        raw: object = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise VerificationFailure from error
+    if not isinstance(raw, dict):
+        raise VerificationFailure
+    document = cast(dict[object, object], raw)
+    if set(document) != {
+        "cleanup_calls",
+        "persist_calls",
+        "session_cleanup_calls",
+    }:
+        raise VerificationFailure
+    cleanup_calls = document["cleanup_calls"]
+    session_cleanup_calls = document["session_cleanup_calls"]
+    persist_calls = document["persist_calls"]
+    if (
+        not isinstance(cleanup_calls, list)
+        or not all(isinstance(value, str) for value in cleanup_calls)
+        or not isinstance(session_cleanup_calls, list)
+        or not all(type(value) is bool for value in session_cleanup_calls)
+        or type(persist_calls) is not int
+    ):
+        raise VerificationFailure
+    return _CleanupFaultTrace(
+        cleanup_calls=tuple(cast(list[str], cleanup_calls)),
+        session_cleanup_calls=tuple(cast(list[bool], session_cleanup_calls)),
+        persist_calls=persist_calls,
+    )
+
+
+def _require_bounded_exact_result(
+    command: Sequence[str],
+    *,
+    workspace: Path,
+    environment: Mapping[str, str],
+    returncode: int,
+    stdout: bytes,
+    stderr: bytes,
+) -> None:
+    result = _run_command(
+        command,
+        workspace,
+        environment,
+        timeout_seconds=_FAULT_TIMEOUT_SECONDS,
+    )
+    _require_exact_result(
+        result,
+        returncode=returncode,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+
+def _tree_snapshot(root: Path) -> tuple[tuple[str, int, str, bytes], ...]:
+    if not root.exists() and not root.is_symlink():
+        return ()
+    base = root.parent
+    pending = [root]
+    snapshot: list[tuple[str, int, str, bytes]] = []
+    while pending:
+        path = pending.pop()
+        metadata = path.lstat()
+        relative = str(path.relative_to(base))
+        mode = stat.S_IMODE(metadata.st_mode)
+        if stat.S_ISLNK(metadata.st_mode):
+            snapshot.append((relative, mode, "symlink", os.readlink(path).encode()))
+        elif stat.S_ISDIR(metadata.st_mode):
+            snapshot.append((relative, mode, "directory", b""))
+            pending.extend(sorted(path.iterdir(), reverse=True))
+        elif stat.S_ISREG(metadata.st_mode):
+            snapshot.append((relative, mode, "file", path.read_bytes()))
+        else:
+            snapshot.append((relative, mode, "other", b""))
+    return tuple(sorted(snapshot))
+
+
+def _verify_sanitized_product_outputs(*, forbidden_paths: Sequence[Path]) -> None:
+    if _product_evidence is None or not _product_evidence:
+        raise VerificationFailure
+    absolute_path = re.compile(rb"(?:^|[ =:\"'])/(?:[^\s\"']+)")
+    pid = re.compile(rb"\bpid(?:=|:|\s)+\d+\b", re.IGNORECASE)
+    memory_address = re.compile(rb"\b0x[0-9a-f]+\b", re.IGNORECASE)
+    forbidden = (
+        b"traceback",
+        b"credential",
+        b"password",
+        b"secret",
+        b"sqlite",
+        b"backend",
+        b"transport identifier",
+        b"device identifier",
+        b"transport=",
+        b"device=",
+        b"schema_version:",
+        b"resources:",
+        b'{"command"',
+    )
+    path_values = tuple(str(path).encode() for path in forbidden_paths)
+    for output in _product_evidence:
+        lowered = output.lower()
+        if (
+            any(value in lowered for value in forbidden)
+            or any(path in output for path in path_values)
+            or absolute_path.search(output) is not None
+            or pid.search(output) is not None
+            or memory_address.search(output) is not None
+        ):
+            raise VerificationFailure
 
 
 def _verify_two_run_persistence(
@@ -979,9 +2380,7 @@ def _verify_b1_active_safe_prune(
         if active_run != expected_run:
             raise VerificationFailure
         observed.append(active_run)
-    _assert_distinct_canonical_run_ids(
-        (removed_run, retained_finalized_run, *observed)
-    )
+    _assert_distinct_canonical_run_ids((removed_run, retained_finalized_run, *observed))
 
 
 def _verify_b1_pruned_run_listing(
@@ -1091,16 +2490,13 @@ def _assert_distinct_canonical_run_ids(run_ids: Sequence[str]) -> None:
         raise VerificationFailure
 
 
-def _assert_exact_success_events(
-    events: Sequence[dict[str, object]], *, count: int
-) -> None:
+def _assert_exact_success_events(events: Sequence[dict[str, object]], *, count: int) -> None:
     if count not in {4, 12} or len(events) != count:
         raise VerificationFailure
     if [event.get("sequence") for event in events] != list(range(count)):
         raise VerificationFailure
     summaries = [
-        (event.get("event_type"), event.get("outcome"), event.get("summary"))
-        for event in events
+        (event.get("event_type"), event.get("outcome"), event.get("summary")) for event in events
     ]
     if summaries != list(_SUCCESS_EVENT_SEQUENCE[:count]):
         raise VerificationFailure
@@ -1119,8 +2515,7 @@ def _load_canonical_json_result(result: CommandResult) -> dict[str, object]:
         raise VerificationFailure
     document = cast(dict[str, object], raw_document)
     canonical = (
-        json.dumps(document, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
-        + "\n"
+        json.dumps(document, ensure_ascii=True, separators=(",", ":"), sort_keys=True) + "\n"
     ).encode("ascii")
     if canonical != successful.stdout:
         raise VerificationFailure
@@ -1130,10 +2525,7 @@ def _load_canonical_json_result(result: CommandResult) -> dict[str, object]:
 def _load_event_page(result: CommandResult, *, run_id: str) -> list[dict[str, object]]:
     document = _load_canonical_json_result(result)
     raw_events_value = document.get("events")
-    if (
-        document.get("run_id") != run_id
-        or not isinstance(raw_events_value, list)
-    ):
+    if document.get("run_id") != run_id or not isinstance(raw_events_value, list):
         raise VerificationFailure
     raw_events = cast(list[object], raw_events_value)
     if document.get("event_count") != len(raw_events):
@@ -1184,11 +2576,7 @@ def _require_exact_result(
     stdout: bytes,
     stderr: bytes,
 ) -> None:
-    if (
-        result.returncode != returncode
-        or result.stdout != stdout
-        or result.stderr != stderr
-    ):
+    if result.returncode != returncode or result.stdout != stdout or result.stderr != stderr:
         raise VerificationFailure
 
 
@@ -1365,9 +2753,7 @@ def assert_scaffold_layout(scaffold_path: Path) -> None:
         raise VerificationFailure
     actual = tuple(
         sorted(
-            path.relative_to(scaffold_path)
-            for path in scaffold_path.rglob("*")
-            if path.is_file()
+            path.relative_to(scaffold_path) for path in scaffold_path.rglob("*") if path.is_file()
         )
     )
     if actual != EXPECTED_SCAFFOLD_FILES:
@@ -1380,17 +2766,13 @@ def assert_wheel_license(wheel: Path, *, repository_root: Path) -> None:
     try:
         with zipfile.ZipFile(wheel) as archive:
             names = archive.namelist()
-            metadata_names = tuple(
-                name for name in names if name.endswith(".dist-info/METADATA")
-            )
+            metadata_names = tuple(name for name in names if name.endswith(".dist-info/METADATA"))
             license_names = tuple(
                 name for name in names if name.endswith(".dist-info/licenses/LICENSE")
             )
             if len(metadata_names) != 1 or len(license_names) != 1:
                 raise VerificationFailure
-            metadata = BytesParser(policy=default).parsebytes(
-                archive.read(metadata_names[0])
-            )
+            metadata = BytesParser(policy=default).parsebytes(archive.read(metadata_names[0]))
             if metadata.get("License-Expression") != EXPECTED_LICENSE_EXPRESSION:
                 raise VerificationFailure
             if "LICENSE" not in metadata.get_all("License-File", []):
@@ -1405,6 +2787,8 @@ def _run_command(
     command: Sequence[str],
     cwd: Path,
     environment: Mapping[str, str],
+    *,
+    timeout_seconds: float = 180.0,
 ) -> CommandResult:
     try:
         completed = subprocess.run(
@@ -1413,11 +2797,19 @@ def _run_command(
             env=environment,
             capture_output=True,
             check=False,
-            timeout=180,
+            timeout=timeout_seconds,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise VerificationFailure from error
-    return CommandResult(completed.returncode, completed.stdout, completed.stderr)
+    result = CommandResult(completed.returncode, completed.stdout, completed.stderr)
+    if Path(command[0]).name in {"hiyelx", "hiyelx.exe"}:
+        _record_product_output(result.stdout, result.stderr)
+    return result
+
+
+def _record_product_output(*values: bytes) -> None:
+    if _product_evidence is not None:
+        _product_evidence.extend(value for value in values if value)
 
 
 def _read_owner_lines(
@@ -1449,6 +2841,7 @@ def _read_owner_lines(
         if not chunk:
             raise VerificationFailure
         pending.extend(chunk)
+    _record_product_output(*(line + b"\n" for line in lines))
     return tuple(lines)
 
 

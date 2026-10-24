@@ -1,11 +1,15 @@
 import json
 import os
 import shutil
+import signal
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import cast
 from zipfile import ZipFile
 
 import pytest
@@ -44,10 +48,7 @@ class FakeRunner:
             (binaries / "hiyelx").write_text("", encoding="utf-8")
         elif "-c" in command:
             environment_path = Path(command[0]).parents[1]
-            installed = (
-                environment_path
-                / "lib/python3.12/site-packages/hiyelx/__init__.py"
-            )
+            installed = environment_path / "lib/python3.12/site-packages/hiyelx/__init__.py"
             installed.parent.mkdir(parents=True)
             installed.write_text("", encoding="utf-8")
             return verify.CommandResult(0, f"{installed}\n".encode(), b"")
@@ -74,16 +75,13 @@ class FakeRunner:
                 return verify.CommandResult(1, b"", b"secret backend failure")
             return verify.CommandResult(0, self.expected, b"")
         elif "runtime" in command:
-            assert environment["HIYELX_RUNTIME_STATE_DIR"] == str(
-                cwd / "runtime-state"
-            )
+            assert environment["HIYELX_RUNTIME_STATE_DIR"] == str(cwd / "runtime-state")
             runtime_index = command.index("runtime")
             runtime_command = command[runtime_index + 1]
             if runtime_command == "start":
                 return verify.CommandResult(
                     0,
-                    b"\n".join(verify.EXPECTED_RUNTIME_READY)
-                    + b"\nruntime=stopped\n",
+                    b"\n".join(verify.EXPECTED_RUNTIME_READY) + b"\nruntime=stopped\n",
                     b"",
                 )
             if runtime_command == "status":
@@ -91,6 +89,46 @@ class FakeRunner:
             if runtime_command == "stop":
                 return verify.CommandResult(0, verify.EXPECTED_RUNTIME_STOP, b"")
         return verify.CommandResult(0, b"", b"")
+
+
+class FakeLifecycleOwner:
+    def __init__(
+        self,
+        trace: list[str],
+        *,
+        pid: int,
+        cleanup_path: Path | None = None,
+    ) -> None:
+        self.trace = trace
+        self.pid = pid
+        self.returncode: int | None = None
+        self._stdout = b""
+        self._stderr = b""
+        self._cleanup_path = cleanup_path
+
+    def send_signal(self, sent_signal: int) -> None:
+        assert sent_signal == signal.SIGINT
+        self.trace.append("sigint")
+        self.returncode = 0
+        self._stdout = b"runtime=stopped\n"
+        if self._cleanup_path is not None:
+            shutil.rmtree(self._cleanup_path)
+
+    def kill(self) -> None:
+        self.trace.append("kill")
+        self.returncode = -signal.SIGKILL
+
+    def communicate(self, timeout: float | None = None) -> tuple[bytes, bytes]:
+        assert timeout == verify._OWNER_EXIT_TIMEOUT_SECONDS  # pyright: ignore[reportPrivateUsage]
+        if self.returncode is None:
+            raise subprocess.TimeoutExpired(
+                cmd=("hiyelx",),
+                timeout=verify._OWNER_EXIT_TIMEOUT_SECONDS,  # pyright: ignore[reportPrivateUsage]
+            )
+        return self._stdout, self._stderr
+
+    def poll(self) -> int | None:
+        return self.returncode
 
 
 _RUN_ONE = "10000000-0000-4000-8000-000000000001"
@@ -103,8 +141,7 @@ def _canonical(document: object) -> verify.CommandResult:
     return verify.CommandResult(
         0,
         (
-            json.dumps(document, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
-            + "\n"
+            json.dumps(document, ensure_ascii=True, separators=(",", ":"), sort_keys=True) + "\n"
         ).encode("ascii"),
         b"",
     )
@@ -354,8 +391,7 @@ def test_environment_blocked_output_is_sanitized(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == (
-        "blocked: clean-install verification requires package access "
-        "and loopback support\n"
+        "blocked: clean-install verification requires package access and loopback support\n"
     )
     assert "secret" not in captured.err
 
@@ -427,32 +463,32 @@ def test_success_markers_are_emitted_in_contract_order(
 
     captured = capsys.readouterr()
     assert captured.err == ""
-    assert captured.out.splitlines() == [
+    output_lines = captured.out.splitlines()
+    assert len(output_lines) == 21
+    assert output_lines == [
         "wheel=hiyelx-0.2.0a1-py3-none-any.whl",
         *verify.HISTORY_SUCCESS_MARKERS,
         "clean-install=passed",
-        *verify.RTO4_B1_SUCCESS_MARKERS,
+        *verify._RTO4_VERIFICATION_SUCCESS_MARKERS,  # pyright: ignore[reportPrivateUsage]
     ]
-    assert len(verify.RTO4_B1_SUCCESS_MARKERS) == len(
-        set(verify.RTO4_B1_SUCCESS_MARKERS)
+    assert len(verify._RTO4_VERIFICATION_SUCCESS_MARKERS) == len(  # pyright: ignore[reportPrivateUsage]
+        set(verify._RTO4_VERIFICATION_SUCCESS_MARKERS)  # pyright: ignore[reportPrivateUsage]
     )
-    assert verify.RTO4_B1_SUCCESS_MARKERS == (
+    assert verify._RTO4_VERIFICATION_SUCCESS_MARKERS == (  # pyright: ignore[reportPrivateUsage]
         "rto4-wheel-built=passed",
         "rto4-source-isolation=passed",
         "rto4-env=passed",
         "rto4-events=passed",
-        "rto4-prune=passed",
-        "rto4-multi=passed",
-    )
-    forbidden = (
         "rto4-interrupt=passed",
         "rto4-crash=passed",
+        "rto4-prune=passed",
+        "rto4-multi=passed",
         "rto4-negative=passed",
         "rto4-sanitize=passed",
         "rto4-cleanup=passed",
         "rto4-automated-acceptance=passed",
     )
-    assert not any(marker in captured.out for marker in forbidden)
+    assert output_lines[-1] == "rto4-automated-acceptance=passed"
 
 
 def test_partial_failure_emits_no_success_marker(
@@ -468,7 +504,44 @@ def test_partial_failure_emits_no_success_marker(
     assert captured.out == ""
     assert captured.err == "error: clean-install verification failed\n"
     assert not any(marker in captured.err for marker in verify.HISTORY_SUCCESS_MARKERS)
-    assert not any(marker in captured.err for marker in verify.RTO4_B1_SUCCESS_MARKERS)
+    assert not any(
+        marker in captured.err
+        for marker in verify._RTO4_VERIFICATION_SUCCESS_MARKERS  # pyright: ignore[reportPrivateUsage]
+    )
+    assert verify._product_evidence is None  # pyright: ignore[reportPrivateUsage]
+
+
+def test_product_evidence_captures_public_cli_but_excludes_build_tools(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    results = iter(
+        (
+            subprocess.CompletedProcess([], 0, b"configuration=valid\n", b""),
+            subprocess.CompletedProcess([], 0, b"build path=/private/task\n", b""),
+        )
+    )
+    observed_timeouts: list[float] = []
+
+    def run(*_args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        timeout = kwargs.get("timeout")
+        assert isinstance(timeout, float)
+        observed_timeouts.append(timeout)
+        return next(results)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    evidence: list[bytes] = []
+    monkeypatch.setattr(verify, "_product_evidence", evidence)  # pyright: ignore[reportPrivateUsage]
+
+    verify._run_command(  # pyright: ignore[reportPrivateUsage]
+        (str(tmp_path / "hiyelx"), "validate-config", "config.yaml"),
+        tmp_path,
+        {},
+    )
+    verify._run_command(("uv", "build"), tmp_path, {})  # pyright: ignore[reportPrivateUsage]
+
+    assert evidence == [b"configuration=valid\n"]
+    assert observed_timeouts == [180.0, 180.0]
 
 
 def test_temporary_workspace_is_removed_after_success(tmp_path: Path) -> None:
@@ -601,12 +674,301 @@ def test_active_and_post_stop_queries_validate_run_and_watermark(
         monkeypatch,
         (_canonical(completed), _event_page(_RUN_ONE, all_events)),
     )
-    assert verify._verify_completed_run(  # pyright: ignore[reportPrivateUsage]
-        tmp_path / "hiyelx",
+    assert (
+        verify._verify_completed_run(  # pyright: ignore[reportPrivateUsage]
+            tmp_path / "hiyelx",
+            _RUN_ONE,
+            workspace=tmp_path,
+            environment={},
+        )
+        == all_events
+    )
+
+
+def test_interrupted_run_requires_sigint_result_events_and_canonical_end(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    interrupted = _run_document(
         _RUN_ONE,
+        session=verify.INTERRUPT_RUNTIME_SESSION,
+        result="interrupted",
+        high_water_mark=11,
+    )
+    interrupted["stop_reason"] = "sigint"
+    events = _event_documents(_RUN_ONE)
+    _script_results(
+        monkeypatch,
+        (_canonical(interrupted), _event_page(_RUN_ONE, events)),
+    )
+
+    assert (
+        verify._verify_interrupted_run(  # pyright: ignore[reportPrivateUsage]
+            tmp_path / "hiyelx",
+            _RUN_ONE,
+            workspace=tmp_path,
+            environment={},
+        )
+        == events
+    )
+
+
+def test_installed_interrupt_waits_for_active_evidence_before_sigint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trace: list[str] = []
+    state_root = tmp_path / "state"
+    session_directory = state_root / verify.INTERRUPT_RUNTIME_SESSION
+    session_directory.mkdir(parents=True)
+    fake_owner = FakeLifecycleOwner(
+        trace,
+        pid=101,
+        cleanup_path=session_directory,
+    )
+    owner = cast(subprocess.Popen[bytes], fake_owner)
+    owners: list[tuple[subprocess.Popen[bytes], str]] = []
+
+    def start_owner(
+        _executable: Path,
+        _config_path: Path,
+        *,
+        session: str,
+        workspace: Path,
+        environment: Mapping[str, str],
+        cleanup_registry: list[tuple[subprocess.Popen[bytes], str]] | None = None,
+    ) -> subprocess.Popen[bytes]:
+        assert workspace == tmp_path
+        assert environment == {}
+        assert cleanup_registry is owners
+        if cleanup_registry is None:
+            raise AssertionError
+        trace.append("ready")
+        cleanup_registry.append((owner, session))
+        return owner
+
+    def active_runtime(
+        _executable: Path,
+        *,
+        session: str,
+        excluded_run_ids: Sequence[str] = (),
+        workspace: Path,
+        environment: Mapping[str, str],
+    ) -> str:
+        assert session == verify.INTERRUPT_RUNTIME_SESSION
+        assert excluded_run_ids == ()
+        assert workspace == tmp_path
+        assert environment == {}
+        assert fake_owner.returncode is None
+        trace.append("active-prefix")
+        return _RUN_ONE
+
+    def interrupted_run(
+        _executable: Path,
+        run_id: str,
+        *,
+        workspace: Path,
+        environment: Mapping[str, str],
+    ) -> list[dict[str, object]]:
+        assert run_id == _RUN_ONE
+        assert workspace == tmp_path
+        assert environment == {}
+        trace.append("interrupted-history")
+        return _event_documents(run_id)
+
+    monkeypatch.setattr(verify, "_start_installed_owner", start_owner)
+    monkeypatch.setattr(verify, "_verify_active_runtime", active_runtime)
+    monkeypatch.setattr(verify, "_verify_interrupted_run", interrupted_run)
+
+    verify._verify_installed_interrupt_journey(  # pyright: ignore[reportPrivateUsage]
+        tmp_path / "hiyelx",
+        tmp_path / "sim-motor.yaml",
+        session=verify.INTERRUPT_RUNTIME_SESSION,
         workspace=tmp_path,
         environment={},
-    ) == all_events
+        state_root=state_root,
+        cleanup_registry=owners,
+    )
+
+    assert trace == ["ready", "active-prefix", "sigint", "interrupted-history"]
+    assert fake_owner.returncode == 0
+    assert not session_directory.exists()
+    assert owners == []
+
+
+def test_incomplete_crash_run_requires_exact_committed_prefix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    incomplete = _run_document(
+        _RUN_ONE,
+        session=verify.CRASH_RUNTIME_SESSION,
+        result=None,
+        high_water_mark=3,
+    )
+    events = _event_documents(_RUN_ONE)[:4]
+    _script_results(
+        monkeypatch,
+        (_canonical(incomplete), _event_page(_RUN_ONE, events)),
+    )
+
+    assert verify._verify_incomplete_run(  # pyright: ignore[reportPrivateUsage]
+        tmp_path / "hiyelx",
+        _RUN_ONE,
+        session=verify.CRASH_RUNTIME_SESSION,
+        workspace=tmp_path,
+        environment={},
+    ) == (incomplete, events)
+
+
+def test_forced_crash_recovery_preserves_old_run_and_uses_new_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trace: list[str] = []
+    state_root = tmp_path / "state"
+    session_directory = state_root / verify.CRASH_RUNTIME_SESSION
+    session_directory.mkdir(parents=True)
+    fake_crashed_owner = FakeLifecycleOwner(trace, pid=201)
+    fake_recovery_owner = FakeLifecycleOwner(trace, pid=202)
+    crashed_owner = cast(subprocess.Popen[bytes], fake_crashed_owner)
+    recovery_owner = cast(subprocess.Popen[bytes], fake_recovery_owner)
+    owners: list[tuple[subprocess.Popen[bytes], str]] = []
+    starts = iter((crashed_owner, recovery_owner))
+    active_runs = iter((_RUN_ONE, _RUN_TWO))
+    incomplete = _run_document(
+        _RUN_ONE,
+        session=verify.CRASH_RUNTIME_SESSION,
+        result=None,
+        high_water_mark=3,
+    )
+    events = _event_documents(_RUN_ONE)[:4]
+    incomplete_checks = 0
+
+    def start_owner(
+        _executable: Path,
+        _config_path: Path,
+        *,
+        session: str,
+        workspace: Path,
+        environment: Mapping[str, str],
+        cleanup_registry: list[tuple[subprocess.Popen[bytes], str]] | None = None,
+    ) -> subprocess.Popen[bytes]:
+        assert session == verify.CRASH_RUNTIME_SESSION
+        assert workspace == tmp_path
+        assert environment == {}
+        assert cleanup_registry is owners
+        if cleanup_registry is None:
+            raise AssertionError
+        selected = next(starts)
+        if selected is recovery_owner:
+            assert session_directory.exists()
+            shutil.rmtree(session_directory)
+            session_directory.mkdir()
+        trace.append("ready")
+        cleanup_registry.append((selected, session))
+        return selected
+
+    def active_runtime(
+        _executable: Path,
+        *,
+        session: str,
+        excluded_run_ids: Sequence[str] = (),
+        workspace: Path,
+        environment: Mapping[str, str],
+    ) -> str:
+        selected = next(active_runs)
+        if selected == _RUN_ONE:
+            assert excluded_run_ids == ()
+            trace.append("crash-prefix")
+        else:
+            assert excluded_run_ids == (_RUN_ONE,)
+            trace.append("recovery-prefix")
+        assert session == verify.CRASH_RUNTIME_SESSION
+        assert workspace == tmp_path
+        assert environment == {}
+        return selected
+
+    def incomplete_run(
+        _executable: Path,
+        run_id: str,
+        *,
+        session: str,
+        workspace: Path,
+        environment: Mapping[str, str],
+    ) -> tuple[dict[str, object], list[dict[str, object]]]:
+        nonlocal incomplete_checks
+        incomplete_checks += 1
+        assert run_id == _RUN_ONE
+        assert session == verify.CRASH_RUNTIME_SESSION
+        assert workspace == tmp_path
+        assert environment == {}
+        trace.append("incomplete-check")
+        return incomplete, events
+
+    def stop_owner(
+        owner: subprocess.Popen[bytes],
+        _executable: Path,
+        *,
+        session: str,
+        workspace: Path,
+        environment: Mapping[str, str],
+        state_root: Path,
+    ) -> None:
+        assert owner is recovery_owner
+        assert session == verify.CRASH_RUNTIME_SESSION
+        assert workspace == tmp_path
+        assert environment == {}
+        assert state_root == tmp_path / "state"
+        trace.append("recovery-stop")
+        fake_recovery_owner.returncode = 0
+        shutil.rmtree(session_directory)
+
+    def completed_run(
+        _executable: Path,
+        run_id: str,
+        *,
+        workspace: Path,
+        environment: Mapping[str, str],
+    ) -> list[dict[str, object]]:
+        assert run_id == _RUN_TWO
+        assert workspace == tmp_path
+        assert environment == {}
+        trace.append("recovery-completed")
+        return _event_documents(run_id)
+
+    monkeypatch.setattr(verify, "_start_installed_owner", start_owner)
+    monkeypatch.setattr(verify, "_verify_active_runtime", active_runtime)
+    monkeypatch.setattr(verify, "_verify_incomplete_run", incomplete_run)
+    monkeypatch.setattr(verify, "_stop_installed_owner", stop_owner)
+    monkeypatch.setattr(verify, "_verify_completed_run", completed_run)
+
+    verify._verify_installed_crash_recovery_journey(  # pyright: ignore[reportPrivateUsage]
+        tmp_path / "hiyelx",
+        tmp_path / "sim-motor.yaml",
+        session=verify.CRASH_RUNTIME_SESSION,
+        workspace=tmp_path,
+        environment={},
+        state_root=state_root,
+        cleanup_registry=owners,
+    )
+
+    assert fake_crashed_owner.returncode == -signal.SIGKILL
+    assert incomplete_checks == 3
+    assert trace == [
+        "ready",
+        "crash-prefix",
+        "kill",
+        "incomplete-check",
+        "ready",
+        "recovery-prefix",
+        "incomplete-check",
+        "recovery-stop",
+        "recovery-completed",
+        "incomplete-check",
+    ]
+    assert owners == []
+    assert not session_directory.exists()
 
 
 def test_two_run_persistence_and_event_text_json_cursor_contract(
@@ -925,6 +1287,36 @@ def test_installed_runtime_command_timeouts_are_verification_failures(
         )
 
 
+def test_fault_command_timeout_is_real_bounded_and_reaps_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(verify, "_FAULT_TIMEOUT_SECONDS", 0.25)
+    pid_path = tmp_path / "fault-child.pid"
+    child = (
+        "import os, sys, time; "
+        "from pathlib import Path; "
+        "Path(sys.argv[1]).write_text(str(os.getpid()), encoding='utf-8'); "
+        "time.sleep(30)"
+    )
+    started = time.monotonic()
+
+    with pytest.raises(verify.VerificationFailure):
+        verify._require_bounded_exact_result(  # pyright: ignore[reportPrivateUsage]
+            (sys.executable, "-c", child, str(pid_path)),
+            workspace=tmp_path,
+            environment=dict(os.environ),
+            returncode=0,
+            stdout=b"",
+            stderr=b"",
+        )
+
+    assert time.monotonic() - started < 2.0
+    pid = int(pid_path.read_text(encoding="utf-8"))
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+
+
 def test_installed_cli_launch_failure_is_a_verification_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -992,6 +1384,7 @@ def test_unsupported_platform_is_environment_blocked(
         verify.verify_installed_runtime_workflow(
             tmp_path / "hiyelx",
             tmp_path / "sim-motor.yaml",
+            python=tmp_path / "python",
             workspace=tmp_path,
             environment={},
         )
@@ -1016,13 +1409,9 @@ def test_b1_state_prefix_prevents_macos_socket_budget_regression() -> None:
     current_state_root = boundary_parent / (
         f"{verify._RUNTIME_STATE_DIRECTORY_PREFIX}{deterministic_suffix}"  # pyright: ignore[reportPrivateUsage]
     )
-    current_socket = (
-        current_state_root / verify.FOURTH_RUNTIME_SESSION / "control.sock"
-    )
+    current_socket = current_state_root / verify.FOURTH_RUNTIME_SESSION / "control.sock"
     legacy_state_root = boundary_parent / f"hxctl-{deterministic_suffix}"
-    legacy_socket = (
-        legacy_state_root / verify.FOURTH_RUNTIME_SESSION / "control.sock"
-    )
+    legacy_socket = legacy_state_root / verify.FOURTH_RUNTIME_SESSION / "control.sock"
 
     assert verify._RUNTIME_STATE_DIRECTORY_PREFIX == "hx-"  # pyright: ignore[reportPrivateUsage]
     assert len(os.fsencode(current_socket)) == verify._MAX_UNIX_SOCKET_PATH_BYTES  # pyright: ignore[reportPrivateUsage]
@@ -1193,8 +1582,7 @@ def test_cleanup_stop_timeout_uses_bounded_kill_fallback(
         [
             sys.executable,
             "-c",
-            "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-            "time.sleep(30)",
+            "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)",
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -1355,9 +1743,9 @@ while True:
 
 
 def test_manual_runbook_cleanup_is_fail_closed() -> None:
-    runbook = (
-        REPOSITORY_ROOT / "docs/development/clean-install-and-demo.md"
-    ).read_text(encoding="utf-8")
+    runbook = (REPOSITORY_ROOT / "docs/development/clean-install-and-demo.md").read_text(
+        encoding="utf-8"
+    )
 
     assert "cleanup_hiyelx_rto3_manual()" in runbook
     assert 'case "$cleanup_target" in' in runbook
@@ -1367,3 +1755,250 @@ def test_manual_runbook_cleanup_is_fail_closed() -> None:
     assert 'rm -rf -- "$cleanup_target"' in runbook
     assert "error: refusing unsafe RTO-3 cleanup" in runbook
     assert '\nrm -rf "$WORK_DIR"\n' not in runbook
+
+
+def test_installed_negative_cli_matrix_is_byte_exact_and_mutation_free(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "hiyelx"
+    config = tmp_path / "sim-motor.yaml"
+    config.write_text('schema_version: "1"\nresources: []\n', encoding="utf-8")
+    state = tmp_path / "state"
+    history = tmp_path / "history"
+    environment = {
+        "HIYELX_RUNTIME_STATE_DIR": str(state),
+        "HIYELX_RUNTIME_HISTORY_DIR": str(history),
+    }
+    observed: list[tuple[str, ...]] = []
+    observed_timeouts: list[float] = []
+
+    def run(
+        command: Sequence[str],
+        _cwd: Path,
+        _environment: Mapping[str, str],
+        *,
+        timeout_seconds: float = 180.0,
+    ) -> verify.CommandResult:
+        observed_timeouts.append(timeout_seconds)
+        arguments = tuple(command[1:])
+        observed.append(arguments)
+        if arguments[:2] == ("runtime", "start"):
+            if arguments[-1] == "../private":
+                return verify.CommandResult(3, b"", verify._INVALID_SESSION)  # pyright: ignore[reportPrivateUsage]
+            return verify.CommandResult(2, b"", verify._INVALID_CONFIGURATION)  # pyright: ignore[reportPrivateUsage]
+        if arguments[:2] in {
+            ("runtime", "status"),
+            ("runtime", "stop"),
+        }:
+            stderr = (
+                verify._INVALID_SESSION  # pyright: ignore[reportPrivateUsage]
+                if arguments[-1] == "../private"
+                else verify._SESSION_NOT_RUNNING  # pyright: ignore[reportPrivateUsage]
+            )
+            return verify.CommandResult(3 if arguments[-1] == "../private" else 5, b"", stderr)
+        if (
+            arguments[:3] == ("runtime", "runs", "show")
+            or arguments[:2]
+            == (
+                "runtime",
+                "events",
+            )
+            and "--after" not in arguments
+            and "--limit" not in arguments
+        ):
+            return verify.CommandResult(11, b"", verify._RUN_NOT_FOUND)  # pyright: ignore[reportPrivateUsage]
+        if arguments[:3] == ("runtime", "runs", "list"):
+            return verify.CommandResult(2, b"", verify._list_limit_error())  # pyright: ignore[reportPrivateUsage]
+        if arguments[:2] == ("runtime", "events"):
+            stderr = (
+                verify._event_after_error()  # pyright: ignore[reportPrivateUsage]
+                if "--after" in arguments
+                else verify._event_limit_error()  # pyright: ignore[reportPrivateUsage]
+            )
+            return verify.CommandResult(2, b"", stderr)
+        if arguments[:3] == ("runtime", "runs", "prune"):
+            stderr = (
+                verify._prune_missing_error()  # pyright: ignore[reportPrivateUsage]
+                if "--keep" not in arguments
+                else verify._prune_value_error()  # pyright: ignore[reportPrivateUsage]
+            )
+            return verify.CommandResult(2, b"", stderr)
+        raise AssertionError(arguments)
+
+    monkeypatch.setattr(verify, "_run_command", run)
+    verify._verify_invalid_cli_inputs(  # pyright: ignore[reportPrivateUsage]
+        executable,
+        config,
+        workspace=tmp_path,
+        environment=environment,
+        state_root=state,
+        history_root=history,
+    )
+
+    assert len(observed) == 22
+    assert observed_timeouts == [verify._FAULT_TIMEOUT_SECONDS] * 22  # pyright: ignore[reportPrivateUsage]
+    assert not state.exists()
+    assert not history.exists()
+
+
+def test_private_wire_matrix_uses_one_connection_per_exact_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[tuple[bytes, bool]] = []
+
+    def request(
+        _socket_path: Path,
+        message: bytes,
+        *,
+        shutdown_write: bool,
+    ) -> bytes:
+        observed.append((message, shutdown_write))
+        if b'"command":"unknown"' in message:
+            return verify._UNKNOWN_COMMAND_REPLY  # pyright: ignore[reportPrivateUsage]
+        return verify._INVALID_REQUEST_REPLY  # pyright: ignore[reportPrivateUsage]
+
+    monkeypatch.setattr(verify, "_raw_control_request", request)
+    verify._verify_private_control_probes(  # pyright: ignore[reportPrivateUsage]
+        tmp_path / "control.sock",
+        session=verify.NEGATIVE_RUNTIME_SESSION,
+    )
+
+    assert len(observed) == 10
+    assert sum(shutdown for _message, shutdown in observed) == 1
+    assert any(len(message) > 8192 for message, _shutdown in observed)
+    assert any(b'"protocol_version":true' in message for message, _ in observed)
+    assert any(b'"protocol_version":1.0' in message for message, _ in observed)
+    assert any(message.count(b'"command"') == 2 for message, _ in observed)
+
+
+@pytest.mark.parametrize(
+    "unsafe",
+    (
+        b"Traceback (most recent call last)",
+        b"/private/task/history.sqlite3",
+        b"credential=top-secret",
+        b"sqlite backend exception",
+        b"device=/dev/tty.usbserial",
+        b"pid=12345",
+        b"address=0xfeedbeef",
+        b'schema_version: "1"',
+        b'{"command":broken',
+    ),
+)
+def test_central_product_output_sanitizer_rejects_every_forbidden_class(
+    unsafe: bytes,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(verify, "_product_evidence", [unsafe])  # pyright: ignore[reportPrivateUsage]
+    with pytest.raises(verify.VerificationFailure):
+        verify._verify_sanitized_product_outputs(  # pyright: ignore[reportPrivateUsage]
+            forbidden_paths=(Path("/private/task"),)
+        )
+
+
+def test_central_product_output_sanitizer_accepts_canonical_surfaces(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        verify,
+        "_product_evidence",
+        [
+            b"session=clean-negative\nruntime=running\ncontrol=ready\n",
+            verify._INVALID_REQUEST_REPLY,  # pyright: ignore[reportPrivateUsage]
+            verify._HISTORY_FAILED,  # pyright: ignore[reportPrivateUsage]
+            verify._CLEANUP_FAILED,  # pyright: ignore[reportPrivateUsage]
+        ],
+    )
+    verify._verify_sanitized_product_outputs(  # pyright: ignore[reportPrivateUsage]
+        forbidden_paths=(Path("/private/task"),)
+    )
+
+
+def test_history_event_faults_use_the_event_query_surface() -> None:
+    assert verify._history_fault_arguments(  # pyright: ignore[reportPrivateUsage]
+        "event-corrupt", event_run_id="run-id"
+    ) == ("runtime", "events", "--run", "run-id")
+    assert verify._history_fault_arguments(  # pyright: ignore[reportPrivateUsage]
+        "event-gap", event_run_id="run-id"
+    ) == ("runtime", "events", "--run", "run-id")
+    assert verify._history_fault_arguments(  # pyright: ignore[reportPrivateUsage]
+        "watermark-corrupt", event_run_id="run-id"
+    ) == ("runtime", "events", "--run", "run-id")
+    assert verify._history_fault_arguments(  # pyright: ignore[reportPrivateUsage]
+        "run-corrupt", event_run_id="run-id"
+    ) == ("runtime", "runs", "list")
+
+
+def test_unsafe_history_file_mode_fixtures_preserve_source_bytes_and_modes(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source-history"
+    source.mkdir(mode=0o700)
+    database = source / "history.sqlite3"
+    lock = source / "history.lock"
+    database.write_bytes(b"database-bytes")
+    lock.write_bytes(b"lock-bytes")
+    os.chmod(database, 0o600)
+    os.chmod(lock, 0o600)
+    fixtures = tmp_path / "fixtures"
+    fixtures.mkdir(mode=0o700)
+    source_before = verify._tree_snapshot(source)  # pyright: ignore[reportPrivateUsage]
+
+    unsafe_database, unsafe_lock = verify._create_unsafe_history_mode_fixtures(  # pyright: ignore[reportPrivateUsage]
+        source,
+        history_fixtures=fixtures,
+    )
+
+    assert verify._tree_snapshot(source) == source_before  # pyright: ignore[reportPrivateUsage]
+    assert stat.S_IMODE(unsafe_database.stat().st_mode) == 0o700
+    assert stat.S_IMODE((unsafe_database / "history.sqlite3").stat().st_mode) == 0o644
+    assert stat.S_IMODE((unsafe_database / "history.lock").stat().st_mode) == 0o600
+    assert (unsafe_database / "history.sqlite3").read_bytes() == b"database-bytes"
+    assert stat.S_IMODE(unsafe_lock.stat().st_mode) == 0o700
+    assert stat.S_IMODE((unsafe_lock / "history.sqlite3").stat().st_mode) == 0o600
+    assert stat.S_IMODE((unsafe_lock / "history.lock").stat().st_mode) == 0o644
+    assert (unsafe_lock / "history.lock").read_bytes() == b"lock-bytes"
+
+
+def test_cleanup_fault_harness_uses_real_orchestration_and_records_order(
+    tmp_path: Path,
+) -> None:
+    executable = Path(sys.executable).parent / "hiyelx"
+    assert executable.is_file()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(mode=0o700)
+    home = workspace / "home"
+    temporary = workspace / "temp"
+    home.mkdir(mode=0o700)
+    temporary.mkdir(mode=0o700)
+    environment = dict(os.environ)
+    environment["HOME"] = str(home)
+    environment["TMPDIR"] = str(temporary)
+    owners: list[tuple[subprocess.Popen[bytes], str]] = []
+    config = REPOSITORY_ROOT / "examples/configs/sim-motor.yaml"
+
+    with tempfile.TemporaryDirectory(
+        prefix=verify._RUNTIME_STATE_DIRECTORY_PREFIX,  # pyright: ignore[reportPrivateUsage]
+        dir=verify._short_temporary_parent(),  # pyright: ignore[reportPrivateUsage]
+    ) as state_name:
+        state_root = Path(state_name)
+        environment["HIYELX_RUNTIME_STATE_DIR"] = state_name
+        trace = verify._verify_installed_cleanup_failure(  # pyright: ignore[reportPrivateUsage]
+            Path(sys.executable),
+            executable,
+            config,
+            workspace=workspace,
+            environment=environment,
+            state_root=state_root,
+            cleanup_registry=owners,
+        )
+
+        assert trace.cleanup_calls == ("safe_stop", "shutdown")
+        assert trace.session_cleanup_calls == (False, True)
+        assert trace.persist_calls == 2
+        assert owners == []
+        assert not (state_root / verify.CLEANUP_RUNTIME_SESSION).exists()
+        assert tuple(state_root.iterdir()) == ()
+        assert not (workspace / "cleanup-failure-trace.json").exists()

@@ -1,8 +1,9 @@
-# Clean Installed-Wheel and RTO-3 Evidence
+# Clean Installed-Wheel and Runtime Acceptance Evidence
 
 The clean-install gate proves that a built HIYELX wheel runs the deterministic
-simulation demo and the complete local RTO-3 run/event-history journey without
-an editable install or a source-checkout import.
+simulation demo, the complete local RTO-3 run/event-history journey, and the
+RTO-4 E2 automated acceptance matrix without an editable install or a
+source-checkout import.
 
 ## Requirements
 
@@ -45,8 +46,26 @@ The verifier performs all of the following in task-owned temporary roots:
 12. explicitly prunes the older finalized run with `--keep 1` while preserving
     both active runs and their committed event prefixes;
 13. stops each concurrent owner independently, proving that the other remains
-    responsive and that both runs finalize exactly once; and
-14. removes every task-owned process, socket, session, database, WAL, SHM,
+    responsive and that both runs finalize exactly once;
+14. sends SIGINT to a ready installed owner, then verifies ordered cleanup,
+    `interrupted/sigint` history, and the exact `0..11` event sequence;
+15. force-kills a separate ready owner, proves its committed `0..3` prefix
+    remains incomplete, safely reclaims the recognized stale session with a
+    new run, and stops the recovery owner normally;
+16. runs the installed CLI negative matrix for invalid configuration, model,
+    session, run, cursor, limit, duplicate, and missing-session cases with
+    exact exit codes and sanitized output;
+17. sends malformed, incomplete, duplicate-key, wrong-version, oversized, and
+    unknown-command requests directly to a ready owner's private socket, then
+    proves that the owner and its committed event prefix are unchanged;
+18. exercises task-owned control and history fault fixtures, including unsafe
+    paths, schema and logical drift, a cross-process busy SQLite writer, and a
+    bounded initialization lock, without repair or partial mutation;
+19. uses the installed Python and unchanged wheel code for one deterministic
+    cleanup-failure harness, proving exit `8`, fixed stderr, final cleanup
+    retry, and `cleanup_failed/cleanup_failure` history; and
+20. centrally scans all captured product output and removes every task-owned
+    process, socket, session, database, WAL, SHM,
     lock, initialization file, virtual environment, build output, and external
     driver scaffold.
 
@@ -64,16 +83,22 @@ history-artifact-cleanup=passed
 clean-install=passed
 ```
 
-A successful local B1 verifier run appends these markers in accepted-registry
-order:
+A successful local verifier run currently appends these markers in
+accepted-registry order:
 
 ```text
 rto4-wheel-built=passed
 rto4-source-isolation=passed
 rto4-env=passed
 rto4-events=passed
+rto4-interrupt=passed
+rto4-crash=passed
 rto4-prune=passed
 rto4-multi=passed
+rto4-negative=passed
+rto4-sanitize=passed
+rto4-cleanup=passed
+rto4-automated-acceptance=passed
 ```
 
 The B1 extension reuses the same verifier, the same single wheel build, the
@@ -83,20 +108,25 @@ concurrent sessions, active-run-safe explicit prune, independent stop,
 exactly-once finalization, and both control-session cleanups. It does not build
 a second wheel or create a second verifier or virtual environment.
 
-Every existing and B1 marker is printed by `main()` only after the complete
+Every existing and RTO-4 marker is printed by `main()` only after the complete
 journey and final temporary-root cleanup succeed. A partial failure prints no
-success marker. A successful local verifier run produces local B1 evidence
-only. The presence of the code or markers in a repository does not by itself
+success marker. A successful local verifier run produces local evidence only.
+The presence of the code or markers in a repository does not by itself
 establish integration or hosted acceptance. Integrated evidence must identify
 the exact commit SHA. Hosted Ubuntu and GitHub-hosted macOS Intel/x86_64
 evidence exists only when the required jobs pass against that exact SHA.
 
-B1 does not emit `rto4-interrupt=passed`, `rto4-crash=passed`,
-`rto4-negative=passed`, `rto4-sanitize=passed`, `rto4-cleanup=passed`, or
-`rto4-automated-acceptance=passed`; those belong to later RTO-4 Slice B
-acceptance work. The six B1 markers do not establish overall automated RTO-4
-acceptance, founder black-box acceptance, physical acceptance, release
-authorization, a tag, or package publication.
+The six-marker B1 subset (`wheel-built`, `source-isolation`, `env`, `events`,
+`prune`, and `multi`) was hosted-accepted at
+`48ee77b5c07229ff9dba5921a46ab35da207129f`; adding local interrupt and crash
+evidence or the remaining negative, sanitization, cleanup, and aggregate
+evidence does not retroactively broaden that hosted result. The complete
+12-marker output is local candidate evidence until separately integrated and
+run on an exact hosted SHA. The final
+`rto4-automated-acceptance=passed` marker means only that the E2 automated
+matrix completed in that verifier run; it does not establish hosted automated
+acceptance, founder black-box acceptance, overall RTO-4 acceptance, physical
+acceptance, release authorization, a tag, or package publication.
 
 ## Manual clean-wheel setup
 
@@ -213,6 +243,38 @@ Both incomplete runs, their `0..3` event prefixes, and the newest finalized run
 remain queryable; only the oldest finalized run is deleted. The owners remain
 responsive, are stopped one at a time, and finish with exact `0..11` event
 sequences without one session affecting the other.
+
+The lifecycle extension uses two additional short, task-owned sessions. SIGINT
+is sent only after readiness and the active run/event prefix are verified; the
+owner must exit `0`, finalize exactly once as `interrupted/sigint`, record
+events `0..11`, and remove its session directory. The forced-crash owner is
+killed only after the same active-prefix checks and must exit with a negative
+POSIX signal return code. Its run remains unchanged and incomplete with null
+end/result/reason fields, watermark `3`, and events `0..3`. Starting the same
+session safely reclaims only recognized stale control state, creates a distinct
+run ID, leaves the old run unchanged, and completes the recovery run through a
+normal CLI stop. These checks do not infer a crash result from a PID or return
+code and do not authorize broad or ambiguous artifact cleanup.
+
+The negative and fault extension uses only task-owned fixtures. Public CLI
+cases require byte-exact stdout/stderr and a real `3.0` second subprocess
+timeout; the build and install commands retain their separate 180-second
+timeout. Private protocol
+probes use one connection and one canonical reply each, and a disconnect never
+requests stop. Unsafe control and history artifacts, including a `0700` root
+with either a `0644` database or `0644` lock, schema drift, logical corruption,
+busy writer contention, and initialization-lock contention must fail closed
+without fixture mutation, migration, repair, retry/reconnect, or `VACUUM`.
+A separate installed-Python fault harness changes no wheel file, adds no
+product hook, and retains the real cleanup orchestrator. It injects a sanitized
+`safe_stop` failure below that orchestrator, records that real `shutdown` is
+still called next, preserves the session-artifact failure/final-retry path, and
+injects a secondary event-persistence failure without changing cleanup-failure
+precedence. Both stop client and owner must exit `8`, and the durable result
+must be `cleanup_failed/cleanup_failure`. The central output scan covers
+captured CLI output, owner output, and wire replies and rejects traceback,
+absolute task paths, raw configuration or payloads, credentials, backend or
+SQLite text, device/transport identifiers, PID values, and memory addresses.
 
 ## Cleanup
 
