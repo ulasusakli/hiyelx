@@ -1431,15 +1431,30 @@ def test_prune_busy_writer_is_bounded_and_leaves_no_partial_deletion(
     _seed_prune_store(root, (_RUN_A, _RUN_B), finalized_count=2)
     blocker = open_writer(root=root)
     blocker._connection.execute("BEGIN IMMEDIATE")  # pyright: ignore[reportPrivateUsage]
+    expected_bounded_sqlite_waits = 2
+    hosted_scheduler_margin_seconds = 0.5
+    production_write_timeout_seconds = (
+        history._WRITE_TIMEOUT_SECONDS  # pyright: ignore[reportPrivateUsage]
+    )
+    aggregate_upper_bound_seconds = (
+        expected_bounded_sqlite_waits * production_write_timeout_seconds
+        + hosted_scheduler_margin_seconds
+    )
     started = time.monotonic()
     try:
         with pytest.raises(HistoryStoreError) as caught:
             prune_runs(root=root, keep=0)
+        elapsed = time.monotonic() - started
         assert str(caught.value) == ""
-        assert time.monotonic() - started < 2.0
         assert len(blocker.list_runs()) == 2
+        assert blocker._connection.in_transaction  # pyright: ignore[reportPrivateUsage]
+        # Opening the existing writer can spend one busy timeout reasserting WAL,
+        # then BEGIN IMMEDIATE can spend a second. The explicit margin covers only
+        # hosted-runner scheduling overhead; this remains a finite regression bound.
+        assert elapsed < aggregate_upper_bound_seconds
     finally:
         blocker._connection.rollback()  # pyright: ignore[reportPrivateUsage]
+        assert not blocker._connection.in_transaction  # pyright: ignore[reportPrivateUsage]
         blocker.close()
     assert prune_runs(root=root, keep=1) == 1
 
