@@ -55,6 +55,7 @@ jobs:
       - name: Focused runtime portability tests
         run: >-
           uv run pytest
+          tests/unit/simulation/test_preview.py
           tests/unit/runtime/test_history.py
           tests/unit/runtime/test_control.py
           tests/unit/test_cli.py

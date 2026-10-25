@@ -128,6 +128,32 @@ matrix completed in that verifier run; it does not establish hosted automated
 acceptance, founder black-box acceptance, overall RTO-4 acceptance, physical
 acceptance, release authorization, a tag, or package publication.
 
+Simulation Preview Alpha extends the same single-wheel, single-environment
+journey. The existing 21 lines remain an exact prefix, followed by these eight
+markers in frozen registry order:
+
+```text
+sim-preview-wheel=passed
+sim-preview-source-isolation=passed
+sim-preview-active=passed
+sim-preview-repeat=passed
+sim-preview-negative=passed
+sim-preview-disconnect=passed
+sim-preview-cleanup=passed
+sim-preview-acceptance=passed
+```
+
+A successful run therefore produces exactly 29 lines. The aggregate marker is
+printed last and only after the installed CLI, repeated read-only observation,
+negative/fault matrix, disconnect resilience, normal finalization, and cleanup
+checks all pass. A partial or failed journey prints none of these eight
+markers. Local marker output is candidate evidence only; hosted SIM-P2
+acceptance additionally requires the exact integration SHA to pass Ubuntu and
+GitHub-hosted `macos-15-intel`, including the simulation preview unit tests and
+the same 29-line installed-wheel journey. These markers do not establish
+founder usability, Studio UI readiness, physical hardware acceptance, release
+authorization, a tag, or package publication.
+
 ## Manual clean-wheel setup
 
 The following shell-safe setup keeps the environment, build, control state,

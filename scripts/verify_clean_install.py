@@ -42,6 +42,7 @@ CRASH_RUNTIME_SESSION = "clean-crash"
 NEGATIVE_RUNTIME_SESSION = "clean-negative"
 CLEANUP_RUNTIME_SESSION = "clean-cleanup"
 INITIALIZATION_LOCK_RUNTIME_SESSION = "clean-init-lock"
+PREVIEW_RUNTIME_SESSION = "sim-preview"
 UNKNOWN_RUN_ID = "00000000-0000-4000-8000-000000000000"
 EXPECTED_RUNTIME_READY = (
     b"session=clean-install",
@@ -59,6 +60,14 @@ EXPECTED_RUNTIME_STATUS = (
     b"latest-event=runtime running\n"
 )
 EXPECTED_RUNTIME_STOP = b"session=clean-install\nruntime=stopped\n"
+EXPECTED_SIMULATION_PREVIEW = (
+    b'{"resources":[{"health_status":"healthy","health_summary":null,'
+    b'"identity":"sim_motor","kind":"motor","lifecycle_state":"running",'
+    b'"state":{"angular_position_radians":0.0,'
+    b'"angular_velocity_radians_per_second":0.0,"revision":0,'
+    b'"simulation_time_seconds":0.0}}],"runtime_state":"running",'
+    b'"schema_version":"1"}\n'
+)
 _READINESS_TIMEOUT_SECONDS = 15.0
 _OWNER_EXIT_TIMEOUT_SECONDS = 15.0
 _CLEANUP_TIMEOUT_SECONDS = 5.0
@@ -87,6 +96,16 @@ _RTO4_VERIFICATION_SUCCESS_MARKERS = (
     "rto4-cleanup=passed",
     "rto4-automated-acceptance=passed",
 )
+_SIM_PREVIEW_SUCCESS_MARKERS = (
+    "sim-preview-wheel=passed",
+    "sim-preview-source-isolation=passed",
+    "sim-preview-active=passed",
+    "sim-preview-repeat=passed",
+    "sim-preview-negative=passed",
+    "sim-preview-disconnect=passed",
+    "sim-preview-cleanup=passed",
+    "sim-preview-acceptance=passed",
+)
 _RUN_NOT_FOUND = b"error: runtime run is not found\n"
 _INVALID_SESSION = b"error: runtime session ID is invalid\n"
 _INVALID_CONFIGURATION = b"error: runtime configuration is invalid\n"
@@ -95,6 +114,8 @@ _SESSION_NOT_RUNNING = b"error: runtime session is not running\n"
 _CONTROL_FAILED = b"error: runtime control failed\n"
 _HISTORY_FAILED = b"error: runtime history failed\n"
 _CLEANUP_FAILED = b"error: runtime cleanup failed\n"
+_PREVIEW_UNAVAILABLE = b"error: runtime preview is unavailable\n"
+_PREVIEW_UNSUPPORTED = b"error: runtime preview is unsupported\n"
 _INVALID_REQUEST_REPLY = (
     b'{"error":{"code":"invalid_request","message":"control request is invalid"},'
     b'"ok":false,"protocol_version":1}\n'
@@ -120,6 +141,62 @@ _SUCCESS_EVENT_SEQUENCE = (
     ("runtime_stopped", "succeeded", "runtime stopped"),
 )
 _SUCCESS_EVENT_SUMMARIES = frozenset(_SUCCESS_EVENT_SEQUENCE)
+_PREVIEW_FAULT_SERVER_SOURCE = r"""
+import fcntl
+import json
+import os
+import socket
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+session = sys.argv[2]
+response = Path(sys.argv[3]).read_bytes()
+directory = root / session
+directory.mkdir(mode=0o700)
+lock_path = directory / "owner.lock"
+lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+os.chmod(lock_path, 0o600)
+fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+control_socket = socket.socket(socket.AF_UNIX)
+socket_path = directory / "control.sock"
+control_socket.bind(str(socket_path))
+os.chmod(socket_path, 0o600)
+manifest_path = directory / "manifest.json"
+manifest_path.write_text(
+    json.dumps(
+        {
+            "config_fingerprint": "0" * 64,
+            "owner_uid": os.geteuid(),
+            "pid": os.getpid(),
+            "protocol_version": 1,
+            "session": session,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    ),
+    encoding="utf-8",
+)
+os.chmod(manifest_path, 0o600)
+control_socket.listen(1)
+print("ready", flush=True)
+connection, _ = control_socket.accept()
+try:
+    request = bytearray()
+    while not request.endswith(b"\n") and len(request) <= 8193:
+        chunk = connection.recv(8193)
+        if not chunk:
+            break
+        request.extend(chunk)
+    try:
+        connection.sendall(response)
+    except OSError:
+        pass
+finally:
+    connection.close()
+    control_socket.close()
+    os.close(lock_fd)
+"""
 EXPECTED_SCAFFOLD_FILES = (
     Path("README.md"),
     Path("acme_motor_driver/__init__.py"),
@@ -182,6 +259,8 @@ def main() -> int:
         print(marker)
     print("clean-install=passed")
     for marker in _RTO4_VERIFICATION_SUCCESS_MARKERS:
+        print(marker)
+    for marker in _SIM_PREVIEW_SUCCESS_MARKERS:
         print(marker)
     return SUCCESS
 
@@ -417,11 +496,23 @@ def _verify_installed_runtime_workflow(
             NEGATIVE_RUNTIME_SESSION,
             CLEANUP_RUNTIME_SESSION,
             INITIALIZATION_LOCK_RUNTIME_SESSION,
+            PREVIEW_RUNTIME_SESSION,
         ):
             _assert_short_control_path(Path(state_name), session)
         owners: list[tuple[subprocess.Popen[bytes], str]] = []
         primary_error: BaseException | None = None
         try:
+            _verify_installed_preview_acceptance(
+                python,
+                executable,
+                config_path,
+                session=PREVIEW_RUNTIME_SESSION,
+                workspace=workspace,
+                environment=runtime_environment,
+                state_root=Path(state_name),
+                history_root=workspace / "preview-history",
+                cleanup_registry=owners,
+            )
             _verify_missing_history_store(
                 executable,
                 workspace=workspace,
@@ -824,6 +915,301 @@ def _verify_active_runtime(
     if shown.get("event_high_water_mark") != 3:
         raise VerificationFailure
     return run_id
+
+
+def _verify_installed_preview_acceptance(
+    python: Path,
+    executable: Path,
+    config_path: Path,
+    *,
+    session: str,
+    workspace: Path,
+    environment: Mapping[str, str],
+    state_root: Path,
+    history_root: Path,
+    cleanup_registry: list[tuple[subprocess.Popen[bytes], str]],
+) -> None:
+    """Prove the installed one-shot preview journey and fault matrix."""
+    preview_environment = dict(environment)
+    preview_environment["HIYELX_RUNTIME_HISTORY_DIR"] = str(history_root)
+    before_missing = (_tree_snapshot(state_root), _tree_snapshot(history_root))
+    _require_bounded_exact_result(
+        (str(executable), "runtime", "preview", "--session", "../private"),
+        workspace=workspace,
+        environment=preview_environment,
+        returncode=3,
+        stdout=b"",
+        stderr=_INVALID_SESSION,
+    )
+    _require_bounded_exact_result(
+        (str(executable), "runtime", "preview", "--session", "missing"),
+        workspace=workspace,
+        environment=preview_environment,
+        returncode=5,
+        stdout=b"",
+        stderr=_SESSION_NOT_RUNNING,
+    )
+    if before_missing != (_tree_snapshot(state_root), _tree_snapshot(history_root)):
+        raise VerificationFailure
+
+    owner = _start_installed_owner(
+        executable,
+        config_path,
+        session=session,
+        workspace=workspace,
+        environment=preview_environment,
+        cleanup_registry=cleanup_registry,
+    )
+    run_id = _verify_active_runtime(
+        executable,
+        session=session,
+        workspace=workspace,
+        environment=preview_environment,
+    )
+    before_run, before_events = _verify_incomplete_run(
+        executable,
+        run_id,
+        session=session,
+        workspace=workspace,
+        environment=preview_environment,
+    )
+    before_observation = (_tree_snapshot(state_root), _tree_snapshot(history_root))
+    previews = [
+        _verify_installed_preview_result(
+            _run_command(
+                (str(executable), "runtime", "preview", "--session", session),
+                workspace,
+                preview_environment,
+            )
+        )
+        for _ in range(2)
+    ]
+    _disconnect_preview_client(state_root / session / "control.sock", session=session)
+    previews.append(
+        _verify_installed_preview_result(
+            _run_command(
+                (str(executable), "runtime", "preview", "--session", session),
+                workspace,
+                preview_environment,
+            )
+        )
+    )
+    if len(set(previews)) != 1:
+        raise VerificationFailure
+    if before_observation != (_tree_snapshot(state_root), _tree_snapshot(history_root)):
+        raise VerificationFailure
+    _assert_incomplete_run_unchanged(
+        executable,
+        run_id,
+        session=session,
+        expected_document=before_run,
+        expected_events=before_events,
+        workspace=workspace,
+        environment=preview_environment,
+    )
+    if (
+        _verify_active_runtime(
+            executable,
+            session=session,
+            workspace=workspace,
+            environment=preview_environment,
+        )
+        != run_id
+    ):
+        raise VerificationFailure
+
+    _stop_installed_owner(
+        owner,
+        executable,
+        session=session,
+        workspace=workspace,
+        environment=preview_environment,
+        state_root=state_root,
+    )
+    cleanup_registry.remove((owner, session))
+    _verify_completed_run(
+        executable,
+        run_id,
+        workspace=workspace,
+        environment=preview_environment,
+    )
+    _require_bounded_exact_result(
+        (str(executable), "runtime", "preview", "--session", session),
+        workspace=workspace,
+        environment=preview_environment,
+        returncode=5,
+        stdout=b"",
+        stderr=_SESSION_NOT_RUNNING,
+    )
+
+    failure_replies = (
+        (
+            "sim-p2-u",
+            b'{"error":{"code":"preview_unavailable","message":"runtime preview is unavailable"},'
+            b'"ok":false,"protocol_version":1}\n',
+            12,
+            _PREVIEW_UNAVAILABLE,
+        ),
+        (
+            "sim-p2-s",
+            b'{"error":{"code":"preview_unsupported","message":"runtime preview is unsupported"},'
+            b'"ok":false,"protocol_version":1}\n',
+            13,
+            _PREVIEW_UNSUPPORTED,
+        ),
+        ("sim-p2-m", b'{"ok":\n', 6, _CONTROL_FAILED),
+        ("sim-p2-o", b"x" * 8193 + b"\n", 6, _CONTROL_FAILED),
+        (
+            "sim-p2-i",
+            b'{"error":{"code":"preview_unavailable","message":"runtime preview is unavailable"},'
+            b'"ok":false,"protocol_version":2}\n',
+            6,
+            _CONTROL_FAILED,
+        ),
+    )
+    for fault_session, response, returncode, stderr in failure_replies:
+        _verify_preview_fault_reply(
+            python,
+            executable,
+            response=response,
+            session=fault_session,
+            returncode=returncode,
+            stderr=stderr,
+            workspace=workspace,
+            environment=preview_environment,
+            state_root=state_root,
+        )
+    if any(state_root.iterdir()):
+        raise VerificationFailure
+
+
+def _verify_installed_preview_result(result: CommandResult) -> bytes:
+    successful = _require_success(result, environment_sensitive=False)
+    if successful.stdout != EXPECTED_SIMULATION_PREVIEW or successful.stderr:
+        raise VerificationFailure
+    document = _load_canonical_json_result(successful)
+    resources = document.get("resources")
+    if (
+        document.get("schema_version") != "1"
+        or document.get("runtime_state") != "running"
+        or not isinstance(resources, list)
+    ):
+        raise VerificationFailure
+    typed_resources = cast(list[object], resources)
+    if len(typed_resources) != 1:
+        raise VerificationFailure
+    resource = typed_resources[0]
+    if not isinstance(resource, dict):
+        raise VerificationFailure
+    state = cast(dict[object, object], resource).get("state")
+    if not isinstance(state, dict):
+        raise VerificationFailure
+    typed_state = cast(dict[object, object], state)
+    if (
+        typed_state.get("simulation_time_seconds") != 0.0
+        or typed_state.get("revision") != 0
+    ):
+        raise VerificationFailure
+    return successful.stdout
+
+
+def _disconnect_preview_client(socket_path: Path, *, session: str) -> None:
+    request = (
+        json.dumps(
+            {"command": "preview", "protocol_version": 1, "session": session},
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("ascii")
+        + b"\n"
+    )
+    connection = socket.socket(socket.AF_UNIX)
+    connection.settimeout(_FAULT_TIMEOUT_SECONDS)
+    try:
+        connection.connect(str(socket_path))
+        connection.sendall(request)
+    except (OSError, TimeoutError) as error:
+        raise VerificationFailure from error
+    finally:
+        connection.close()
+
+
+def _verify_preview_fault_reply(
+    python: Path,
+    executable: Path,
+    *,
+    response: bytes,
+    session: str,
+    returncode: int,
+    stderr: bytes,
+    workspace: Path,
+    environment: Mapping[str, str],
+    state_root: Path,
+) -> None:
+    _assert_short_control_path(state_root, session)
+    response_path = workspace / f".{session}.reply"
+    session_directory = state_root / session
+    response_path.write_bytes(response)
+    os.chmod(response_path, 0o600)
+    server = subprocess.Popen(
+        (
+            str(python),
+            "-c",
+            _PREVIEW_FAULT_SERVER_SOURCE,
+            str(state_root),
+            session,
+            str(response_path),
+        ),
+        cwd=workspace,
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        if _read_fixture_ready(server) != b"ready\n":
+            raise VerificationFailure
+        _require_bounded_exact_result(
+            (str(executable), "runtime", "preview", "--session", session),
+            workspace=workspace,
+            environment=environment,
+            returncode=returncode,
+            stdout=b"",
+            stderr=stderr,
+        )
+        remaining_stdout, remaining_stderr = server.communicate(
+            timeout=_FAULT_TIMEOUT_SECONDS
+        )
+        if server.returncode != SUCCESS or remaining_stdout or remaining_stderr:
+            raise VerificationFailure
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise VerificationFailure from error
+    finally:
+        if server.poll() is None:
+            server.terminate()
+            try:
+                server.wait(timeout=_CLEANUP_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                server.kill()
+                server.wait(timeout=_CLEANUP_TIMEOUT_SECONDS)
+        response_path.unlink(missing_ok=True)
+        if session_directory.exists() and not session_directory.is_symlink():
+            shutil.rmtree(session_directory)
+
+
+def _read_fixture_ready(process: subprocess.Popen[bytes]) -> bytes:
+    if process.stdout is None:
+        raise VerificationFailure
+    readable, _, _ = select.select(
+        [process.stdout],
+        [],
+        [],
+        _FAULT_TIMEOUT_SECONDS,
+    )
+    if not readable:
+        raise VerificationFailure
+    try:
+        return os.read(process.stdout.fileno(), len(b"ready\n"))
+    except OSError as error:
+        raise VerificationFailure from error
 
 
 def _stop_installed_owner(

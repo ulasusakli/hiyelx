@@ -464,12 +464,13 @@ def test_success_markers_are_emitted_in_contract_order(
     captured = capsys.readouterr()
     assert captured.err == ""
     output_lines = captured.out.splitlines()
-    assert len(output_lines) == 21
+    assert len(output_lines) == 29
     assert output_lines == [
         "wheel=hiyelx-0.2.0a1-py3-none-any.whl",
         *verify.HISTORY_SUCCESS_MARKERS,
         "clean-install=passed",
         *verify._RTO4_VERIFICATION_SUCCESS_MARKERS,  # pyright: ignore[reportPrivateUsage]
+        *verify._SIM_PREVIEW_SUCCESS_MARKERS,  # pyright: ignore[reportPrivateUsage]
     ]
     assert len(verify._RTO4_VERIFICATION_SUCCESS_MARKERS) == len(  # pyright: ignore[reportPrivateUsage]
         set(verify._RTO4_VERIFICATION_SUCCESS_MARKERS)  # pyright: ignore[reportPrivateUsage]
@@ -488,7 +489,20 @@ def test_success_markers_are_emitted_in_contract_order(
         "rto4-cleanup=passed",
         "rto4-automated-acceptance=passed",
     )
-    assert output_lines[-1] == "rto4-automated-acceptance=passed"
+    assert verify._SIM_PREVIEW_SUCCESS_MARKERS == (  # pyright: ignore[reportPrivateUsage]
+        "sim-preview-wheel=passed",
+        "sim-preview-source-isolation=passed",
+        "sim-preview-active=passed",
+        "sim-preview-repeat=passed",
+        "sim-preview-negative=passed",
+        "sim-preview-disconnect=passed",
+        "sim-preview-cleanup=passed",
+        "sim-preview-acceptance=passed",
+    )
+    assert len(verify._SIM_PREVIEW_SUCCESS_MARKERS) == len(  # pyright: ignore[reportPrivateUsage]
+        set(verify._SIM_PREVIEW_SUCCESS_MARKERS)  # pyright: ignore[reportPrivateUsage]
+    )
+    assert output_lines[-1] == "sim-preview-acceptance=passed"
 
 
 def test_partial_failure_emits_no_success_marker(
@@ -508,7 +522,35 @@ def test_partial_failure_emits_no_success_marker(
         marker in captured.err
         for marker in verify._RTO4_VERIFICATION_SUCCESS_MARKERS  # pyright: ignore[reportPrivateUsage]
     )
+    assert not any(
+        marker in captured.err
+        for marker in verify._SIM_PREVIEW_SUCCESS_MARKERS  # pyright: ignore[reportPrivateUsage]
+    )
     assert verify._product_evidence is None  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.parametrize(
+    "result",
+    (
+        verify.CommandResult(1, b"", b"private failure"),
+        verify.CommandResult(0, b"{}\n", b""),
+        verify.CommandResult(0, verify.EXPECTED_SIMULATION_PREVIEW, b"private warning"),
+    ),
+)
+def test_installed_preview_result_rejects_noncanonical_or_noisy_output(
+    result: verify.CommandResult,
+) -> None:
+    with pytest.raises(verify.VerificationFailure):
+        verify._verify_installed_preview_result(result)  # pyright: ignore[reportPrivateUsage]
+
+
+def test_installed_preview_result_accepts_exact_canonical_snapshot() -> None:
+    assert (
+        verify._verify_installed_preview_result(  # pyright: ignore[reportPrivateUsage]
+            verify.CommandResult(0, verify.EXPECTED_SIMULATION_PREVIEW, b"")
+        )
+        == verify.EXPECTED_SIMULATION_PREVIEW
+    )
 
 
 def test_product_evidence_captures_public_cli_but_excludes_build_tools(
