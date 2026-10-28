@@ -3,22 +3,28 @@
 > - **Status:** Accepted / Frozen — SIM-P3 Founder Acceptance Contract
 > - **Founder approval:** `APPROVE SIM-P3 CONTRACT DEFAULTS`
 > - **Approval date:** `2026-10-26`
+> - **Founder attestation amendment:** `APPROVE SIM-P3 FOUNDER ATTESTATION AMENDMENT`
+> - **Amendment approval date:** `2026-10-28`
+> - **Contract revision:** Accepted / Frozen, amended with Founder Interpretation Attestation Route
 > - **Evidence baseline:** `0d64bbf6f6a814f3a2851757b5d965043c778233`
 > - **Package version:** `0.2.0a1`
 > - **Hosted baseline:** Quality gate `40182452809`
 > - **Technical baseline:** SIM-P0, SIM-P1, and SIM-P2 accepted
 > - **Accepted baseline revision:** `0d64bbf6f6a814f3a2851757b5d965043c778233`
 > - **Accepted hosted baseline:** Quality gate `40182452809`
-> - **SIM-P3 session preparation:** Not started
-> - **SIM-P3 session execution:** Not started
+> - **SIM-P3 session preparation:** Historical attempts occurred; no session is currently prepared
+> - **SIM-P3 session execution:** Historical live-session attempts occurred; none was accepted and no session is currently running
 > - **Studio Lite implementation:** Not started
 > - **Physical hardware acceptance:** Separate and pending
 > - **Release, tag, and publication state:** Unchanged
 
 This document is the founder-approved, accepted, and frozen SIM-P3 contract.
 The founder approved all ten defaults on 2026-10-26 with the exact phrase
-`APPROVE SIM-P3 CONTRACT DEFAULTS`. Normative words such as **must** and **must
-not** define the bounded SIM-P3 session and handoff contract.
+`APPROVE SIM-P3 CONTRACT DEFAULTS`, and approved the Founder Interpretation
+Attestation amendment on 2026-10-28 with the exact phrase
+`APPROVE SIM-P3 FOUNDER ATTESTATION AMENDMENT`. Normative words such as
+**must** and **must not** define the bounded SIM-P3 acceptance routes and
+handoff contract.
 
 This contract builds on the accepted
 [`SIM-P0 Preview Contract`](simulation-preview-alpha.md),
@@ -56,9 +62,10 @@ not turn the founder into an external participant, extend hosted platform
 coverage, or create physical, release, publication, safety, autonomy, or
 production-readiness evidence.
 
-Studio Lite must not start before the SIM-P3 contract is approved, the bounded
-session passes, the founder records exact `ACCEPT`, the sanitized evidence is
-reviewed and integrated, and the handoff gate is explicitly closed.
+Studio Lite must not start before the SIM-P3 contract is approved, a
+contract-defined founder acceptance route passes, the founder records exact
+`ACCEPT`, the sanitized evidence is reviewed and integrated, and the handoff
+gate is explicitly closed.
 
 ### Accepted technical baseline
 
@@ -87,7 +94,7 @@ one layer into another.
 | E1 | SIM-P1 in-process technical evidence | Accepted | Typed schema, time/revision semantics, determinism, coherence, and read-only behavior inside one process. |
 | E2 | SIM-P2 installed-wheel automated evidence | Accepted | One wheel, one non-editable environment, public CLI, negative matrix, cleanup, and exact 29-line verifier. |
 | E3 | Ubuntu/macOS Intel hosted portability evidence | Accepted | Exact-SHA Ubuntu full gate and GitHub-hosted macOS Intel focused gate. It is not human usability evidence. |
-| E4 | SIM-P3 founder human interpretation evidence | Not produced | Bounded founder journey, interpretation rubric, scope explanation, explicit decision, and sanitized record. |
+| E4 | SIM-P3 founder interpretation evidence | Founder Interpretation Attestation candidate exists; awaiting bounded review and integration; accepted/integrated E4 evidence does not yet exist. | The candidate does not establish SIM-P3 completion. |
 | E5 | Studio Lite UX evidence | Future | Evidence from a later implemented observational UI. SIM-P3 handoff is not Studio usability proof. |
 | E6 | Physical hardware evidence | Separate and pending | Requires explicit physical authorization and its own evidence; simulation cannot substitute. |
 | E7 | Release, tag, and publication evidence | Separate and pending | Requires a separate release decision; acceptance does not publish anything. |
@@ -220,8 +227,17 @@ private process inspection.
 
 ## E. Interpretation rubric
 
-All rows must pass in the founder's own words without answer coaching during
-the timed journey.
+The rubric topics below apply to both acceptance routes. Their evidence and
+timing requirements are route-specific:
+
+- **Original live-session route:** every row must pass in the founder's own
+  words during the timed journey, without answer coaching. The existing live
+  timer and zero-assistance gates remain unchanged.
+- **Founder Interpretation Attestation Route:** every topic must pass in a
+  founder-authored written attestation. This does not claim a timed journey or
+  a zero-assistance live-session pass and does not require a new runtime
+  session. The attestation must cover every rubric meaning and evidence
+  boundary below.
 
 | Topic | Required interpretation | Failure example |
 | --- | --- | --- |
@@ -335,26 +351,106 @@ The evidence path for a future accepted session is:
 docs/evidence/YYYY-MM-DD-sim-p3-founder-acceptance.md
 ```
 
-Contract approval alone does not authorize evidence creation. An
-acceptance evidence candidate may be created only after exact founder
-`ACCEPT`, successful cleanup, and every acceptance gate. A future accepted
-session record must include:
+Contract approval alone does not authorize evidence creation. Evidence may be
+created only after one of the two routes below passes, the founder gives exact
+`ACCEPT`, cleanup succeeds, and the repository remains unchanged.
+
+### Original live-session route
+
+The original route remains a timed, zero-assistance `8/8` live journey under
+Sections C–H. Its assistance, timing, interpretation, cleanup, and repository
+gates remain binding. Failed attempts under this route are not acceptance
+evidence and cannot be retroactively converted into zero-assistance passes.
+This route does not change the record or metrics of any prior attempt.
+
+### Founder Interpretation Attestation Route
+
+This separate route was approved by the exact founder amendment phrase
+`APPROVE SIM-P3 FOUNDER ATTESTATION AMENDMENT`. It permits E4 Founder
+Interpretation Attestation evidence without a new timed runtime session. It
+does not retroactively pass an original live-session attempt, assert an
+assistance count of zero for such an attempt, or reclassify any failed attempt.
+Each evidence candidate must state which route it uses; claims cannot be
+combined across routes.
+
+All of these gates must pass:
+
+1. SIM-P0, SIM-P1, and SIM-P2 technical acceptance exists.
+2. Exact candidate and package identity are verified.
+3. The founder has observed public installed-wheel status/preview results.
+4. The founder completes every interpretation rubric topic in their own
+   written words.
+5. The founder correctly explains simulation/physical and product-claim
+   boundaries.
+6. The founder gives exact `ACCEPT`.
+7. The founder gives exact amendment approval
+   `APPROVE SIM-P3 FOUNDER ATTESTATION AMENDMENT`.
+8. Relevant session/workspace cleanup succeeded.
+9. Repository state remained unchanged.
+10. No hardware operation occurred.
+11. The record is sanitized under this section.
+12. Until the evidence is boundedly reviewed and integrated, SIM-P3 is not
+    complete.
+
+This route does not require a new timed runtime session, a zero-assistance
+session metric, a chat-controller token protocol, repeated wheel builds, or
+repeated public command execution.
+
+### Common record requirements
+
+A record under either route must include:
 
 - exact candidate SHA;
 - wheel filename and package version;
 - platform and architecture;
 - accepted hosted baseline run and Ubuntu/macOS job IDs;
-- founder-session elapsed duration, excluding preparation;
-- journey completion count, exact `8/8` for acceptance;
-- assistance, blocker, leak, live-process, and artifact-leftover counts;
-- sanitized exact public command transcript;
-- result for every interpretation-rubric row;
+- exact route and `Founder product decision: ACCEPT`;
+- complete results for every interpretation-rubric row;
 - founder explanation of simulation, read-only, local-first, physical,
   release, autonomy, hard-real-time, and safety boundaries;
-- exact `Founder decision: ACCEPT`;
-- whether the session was retried and the number of attempts; and
+- cleanup, repository, and hardware-operation status where applicable;
 - explicit separation of automated, founder, Studio, physical, and
-  release/publication evidence.
+  release/publication evidence;
+- sanitization status; and
+- bounded review/integration state.
+
+### Original live-session record requirements
+
+An original live-session record must additionally include:
+
+- elapsed duration, excluding preparation;
+- exact journey completion `8/8`;
+- assistance, blocker, leak, live-process, and artifact-leftover counts;
+- sanitized exact timed public command transcript;
+- whether the session was retried and the number of live-session attempts; and
+- exact session decision chronology.
+
+These live-session measurements must not be inferred from or attributed to an
+attestation record.
+
+### Founder Interpretation Attestation record requirements
+
+An attestation record must additionally include:
+
+- exact `Founder amendment approval: APPROVE SIM-P3 FOUNDER ATTESTATION AMENDMENT`;
+- the founder-authored written interpretation;
+- retained public command forms and results as supporting context, clearly
+  distinguished from any new execution;
+- transparency that no new runtime execution occurred for the attestation;
+- transparency that original failed live attempts were not reclassified; and
+- relevant retained cleanup evidence.
+
+Elapsed time, `8/8`, assistance, retry, and other session-only metrics are
+**not applicable to the attestation route**. They must be omitted or marked
+not applicable; if included for historical context, they must be explicitly
+identified as non-candidate attempt data and never as attestation acceptance
+measurements.
+
+An attestation candidate must not invent elapsed/`8/8`/assistance/retry
+metrics, claim a new command execution, or use original failed-attempt metrics
+as acceptance measurements. The attestation route does not require repeated
+public command execution; retained command forms/results may support the
+founder's interpretation without claiming a rerun.
 
 Exact `REJECT` or any session failure must never be classified as an
 acceptance evidence candidate, accepted session record, SIM-P3 founder
@@ -433,12 +529,26 @@ would not authorize Studio implementation by itself.
 | `SIMP3-NEGATIVE-01` | A missing or stopped session fails predictably. | Public negative command transcript. | Exit `5`, empty stdout, exact fixed stderr, no session creation. |
 | `SIMP3-SANITIZE-01` | Session and evidence leak no private data. | Transcript/evidence allowlist scan and zero leak count. | No forbidden path, identity, config, credential, protocol, or traceback content. |
 | `SIMP3-CLEANUP-01` | The attempt leaves no task-owned process or artifact. | Operator cleanup record and final repository-state check. | Owner stopped; process/artifact counts zero; repository unchanged. |
-| `SIMP3-EVIDENCE-01` | Founder evidence is complete and remains distinct from other layers. | Sanitized evidence candidate satisfying Section I. | Exact `Founder decision: ACCEPT` and measurements present; non-candidate attempts remain excluded; automated, Studio, physical, and release claims remain separate. |
+| `SIMP3-EVIDENCE-01` | Founder evidence is complete and remains distinct from other layers. | Sanitized evidence candidate satisfying Section I for its declared route. | Exact `Founder product decision: ACCEPT`; route-specific required fields are present; non-candidate attempts remain excluded; automated, Studio, physical, and release claims remain separate. |
 | `SIMP3-HANDOFF-01` | Studio Lite receives only the frozen observational minimum. | Reviewed handoff checklist against Section J. | All required fields/states included; all controls and private-boundary access excluded. |
+| `SIMP3-ATTEST-01` | Founder-authored attestation is a separate E4 route and does not alter historical live-session results. | Founder’s own written rubric, exact product `ACCEPT`, exact amendment approval, sanitized candidate, and bounded review/integration record. | Every attestation gate in Section I passes; no failed live attempt is reclassified; SIM-P3 remains incomplete until review and integration. |
 
-All ten rows and explicit `ACCEPT` are required for a future SIM-P3 acceptance
-claim. No row produces physical, release, publication, safety, or Studio UX
-evidence.
+Route assignment is explicit:
+
+- **Original live-session route gates:** `SIMP3-PREP-01`,
+  `SIMP3-INSTALL-01`, `SIMP3-JOURNEY-01`, `SIMP3-INTERPRET-01`,
+  `SIMP3-READONLY-01`, `SIMP3-NEGATIVE-01`, `SIMP3-SANITIZE-01`,
+  `SIMP3-CLEANUP-01`, `SIMP3-EVIDENCE-01`, and `SIMP3-HANDOFF-01`.
+- **Founder Interpretation Attestation Route gates:** `SIMP3-INTERPRET-01`,
+  `SIMP3-SANITIZE-01`, `SIMP3-EVIDENCE-01`, `SIMP3-HANDOFF-01`, and
+  `SIMP3-ATTEST-01`.
+
+For the attestation route, PREP, INSTALL, READONLY, NEGATIVE, and CLEANUP
+records may be supporting retained public or technical inputs; they are not
+live-session exit gates to be rerun. `SIMP3-JOURNEY-01` does not apply to the
+attestation route. That route makes no timed or zero-assistance live-journey
+claim. Shared gates must use their route-specific evidence forms. Neither
+route produces physical, release, publication, safety, or Studio UX evidence.
 
 ## L. Founder decision points
 
