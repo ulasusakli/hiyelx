@@ -1,24 +1,30 @@
 # SIM-P3 Founder Attestation Evidence
 
-> - **Status:** Candidate — Awaiting Bounded Review and Integration
+> - **Status:** Accepted / Integrated — SIM-P3 Founder Interpretation Attestation
 > - **Route:** Founder Interpretation Attestation Route
-> - **Candidate SHA:** `c8fb52ba292865346ce461cbe47713880700d4b8`
+> - **Founder session candidate SHA:** `c8fb52ba292865346ce461cbe47713880700d4b8`
+> - **Integration commit:** `a26195494f617ff32574966f491426d3e9f0d26b`
+> - **Exact hosted tested SHA:** `a26195494f617ff32574966f491426d3e9f0d26b`
 > - **Package:** `hiyelx==0.2.0a1`
 > - **Wheel:** `hiyelx-0.2.0a1-py3-none-any.whl`
 > - **Founder platform:** Darwin / arm64
 > - **Founder product decision:** `ACCEPT`
 > - **Founder amendment approval:** `APPROVE SIM-P3 FOUNDER ATTESTATION AMENDMENT`
 > - **Amendment approval date:** `2026-10-28`
+> - **Hosted closure gate:** Quality gate `40736962525` — success
+> - **Ubuntu job:** `122987995604` — `705 passed, 1 physical skipped`
+> - **macOS Intel job:** `122987996143` — `macos-15-intel`, Intel/x86_64, `365 passed`
+> - **Bounded review:** `NO FINDINGS`
 
 ## Scope and transparency
 
-This candidate records founder interpretation under the separately approved Founder Interpretation Attestation Route. It is not a zero-assistance live-session acceptance.
+This record documents founder interpretation under the separately approved Founder Interpretation Attestation Route. It is not a zero-assistance live-session acceptance.
 
 The original live-session method required a zero-assistance gate. Earlier live attempts did not produce accepted evidence under that original gate. They are not reclassified as zero-assistance passes and are not listed as accepted sessions here. The invalid acceptance evidence candidate was reviewed and discarded before this attestation candidate.
 
 The founder determined that repeated runtime sessions and chat-controller formatting problems measured orchestration mechanics rather than founder usability, and gave the exact amendment approval above. The founder product decision `ACCEPT` had already been given; the amendment approval changes the acceptance method. The product decision does not mean an original live-session attempt passed.
 
-No new runtime execution was performed for this amendment/evidence task. No zero-assistance metric is claimed. The current candidate rests only on the founder-approved attestation route and remains subject to bounded review and integration.
+No new runtime execution was performed for the amendment/evidence task. No zero-assistance metric is claimed. The founder attestation route has passed bounded review and is integrated; this evidence remains distinct from automated, Studio, physical, and release evidence.
 
 ## Candidate identity and accepted technical baseline
 
@@ -36,7 +42,7 @@ No new runtime execution was performed for this amendment/evidence task. No zero
 | SIM markers | `8/8` |
 | Final marker | `sim-preview-acceptance=passed` |
 
-These accepted automated and hosted technical results are separate from this E4 founder interpretation candidate.
+These accepted automated and hosted technical results are separate from this E4 founder interpretation evidence.
 
 ## Retained public journey facts
 
@@ -133,11 +139,11 @@ The product decision is recorded as founder acceptance of the product interpreta
 | E1 — SIM-P1 in-process technical evidence | Accepted |
 | E2 — SIM-P2 installed-wheel automated evidence | Accepted |
 | E3 — Ubuntu/macOS Intel hosted evidence | Accepted |
-| E4 — SIM-P3 founder interpretation evidence | This attestation candidate; awaiting bounded review and integration |
+| E4 — SIM-P3 founder interpretation evidence | Accepted / integrated via the Founder Interpretation Attestation Route |
 | E5 — Studio Lite UX evidence | Future; not produced |
 | E6 — Physical hardware evidence | Pending |
 | E7 — Release/tag/publication evidence | Pending |
 
 ## Deferred claims and status
 
-This is founder interpretation evidence only. It is not Studio UX, physical, release, publication, autonomy, hard-real-time, production-readiness, or safety evidence. No Studio Lite work, physical operation, release, tag, or publication is authorized or claimed. SIM-P3 is not complete until this evidence has passed bounded review and integration.
+This is founder interpretation evidence only and does not establish Studio UX, physical, release, publication, autonomy, hard-real-time, production-readiness, or safety evidence. SIM-P3 and the Simulation/Preview Alpha software scope are complete through the accepted Founder Interpretation Attestation Route. The original zero-assistance live-session route did not pass; failed attempts were not reclassified. Studio Lite implementation has not started, and physical acceptance and release/tag/publication remain separate and pending. The only next work is a bounded STUDIO-P0 observational contract; this record does not authorize Studio implementation.

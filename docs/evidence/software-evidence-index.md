@@ -99,6 +99,32 @@ torque, movement, hard-real-time behavior, or certified functional-safety
 claim follows from this evidence. Runtime operation remains local-first and
 requires no cloud or control plane.
 
+## Simulation/Preview Alpha evidence on current `main`
+
+Simulation/Preview Alpha is complete in its SIM-P0–SIM-P3 software scope at
+integration commit `a26195494f617ff32574966f491426d3e9f0d26b`. SIM-P3 is accepted
+through the Founder Interpretation Attestation Route. The original
+zero-assistance live-session route did not pass, and failed attempts were not
+reclassified.
+
+| Capability | Status | Contract/evidence | Integration/verification |
+|---|---|---|---|
+| SIM-P0 | Complete | [Preview contract](../architecture/simulation-preview-alpha.md): canonical schema/model | Frozen application-facing preview schema and model |
+| SIM-P1 | Complete | [Preview contract](../architecture/simulation-preview-alpha.md): in-process preview model | Deterministic, coherent, read-only technical evidence |
+| SIM-P2 | Accepted | [Local adapter contract](../architecture/simulation-preview-local-adapter.md) | Public CLI and installed-wheel acceptance; Quality gate [`40182452809`](https://github.com/ulasusakli/hiyelx/actions/runs/40182452809) |
+| SIM-P3 | Complete via Founder Interpretation Attestation Route | [Founder contract](../architecture/simulation-preview-founder-acceptance.md) and [attestation evidence](2026-10-28-sim-p3-founder-attestation.md) | Integrated at `a26195494f617ff32574966f491426d3e9f0d26b`; Quality gate [`40736962525`](https://github.com/ulasusakli/hiyelx/actions/runs/40736962525), Ubuntu `122987995604` (`705 passed, 1 physical skipped`), macOS Intel `122987996143` (`365 passed`) |
+
+The hosted installed-wheel verification produced exactly 29 lines, all `8/8`
+SIM markers, and final `sim-preview-acceptance=passed`. E4 is founder
+interpretation evidence; it does not replace E5 Studio UX, E6 physical, or E7
+release/publication evidence. Studio UX evidence and physical hardware evidence
+do not yet exist; release/tag/publication state is unchanged. The founder's
+local Darwin/arm64 evidence is not hosted ARM64 portability evidence. No
+physics-fidelity, physical-hardware, autonomy, hard-real-time,
+production-readiness, or certified-safety evidence is claimed. The next work is
+only a bounded STUDIO-P0 observational contract; Studio Lite implementation
+has not started.
+
 ## External developer evidence
 
 EDR-1 is recorded separately in

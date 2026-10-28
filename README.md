@@ -220,15 +220,29 @@ requests, blockers, unexpected leaks, live-process leftovers, or task-owned
 artifact leftovers and recorded `ACCEPT`. See the
 [`RTO-4 founder acceptance evidence`](docs/evidence/2026-10-24-rto4-founder-acceptance.md).
 
-The founder session ran locally on macOS/ARM64; it is founder evidence, not
-hosted ARM64 portability acceptance. No hosted ARM64/Apple Silicon passing
-evidence was produced or required. Runtime Operations Alpha RTO-1 through
-RTO-4 is complete in the software/runtime acceptance scope, and
-Simulation/Preview Alpha is the next product milestone.
+## Simulation/Preview Alpha
 
-This closure does not change package version `0.2.0a1`, create a `v0.2.0a1`
-tag, GitHub release, package-registry publication, or provide Physical Hardware
-Proof. Physical XL430 acceptance remains a separate pending track.
+Runtime Operations Alpha is complete. SIM-P0 through SIM-P3 Simulation/Preview
+Alpha software scope is complete on current `main`. SIM-P3 was
+accepted through the Founder Interpretation Attestation Route; original failed
+zero-assistance live attempts remain failed and were not reclassified. The
+contract amendment and sanitized attestation evidence were integrated at
+`a26195494f617ff32574966f491426d3e9f0d26b`; Quality gate
+[`40736962525`](https://github.com/ulasusakli/hiyelx/actions/runs/40736962525)
+passed both hosted jobs:
+
+- Ubuntu job `122987995604`: `705 passed, 1 physical skipped`.
+- GitHub-hosted macOS Intel job `122987996143`: `macos-15-intel`, Intel/x86_64,
+  `365 passed`.
+- Both produced the exact 29-line installed-wheel result, all `8/8` SIM
+  markers, and final `sim-preview-acceptance=passed`.
+
+See the [SIM-P3 founder contract](docs/architecture/simulation-preview-founder-acceptance.md)
+and [accepted founder attestation](docs/evidence/2026-10-28-sim-p3-founder-attestation.md).
+The founder's local Darwin/arm64 evidence is not hosted ARM64 portability
+evidence. Next is `STUDIO-P0 — Studio Lite observational contract`; Studio Lite
+implementation has not started. Physical acceptance remains separate and
+pending. Package `0.2.0a1`, tag, release, and publication state are unchanged.
 
 ## Pre-seed scope
 

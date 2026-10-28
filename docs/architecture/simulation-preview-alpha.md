@@ -6,15 +6,25 @@
 > - **Evidence baseline:** `6237fa8ce9ec6eaaa44bb6b6b505dd57c82a3073`
 > - **Package version:** `0.2.0a1`
 > - **Runtime prerequisite:** RTO-1 through RTO-4 accepted
-> - **Preview implementation:** Not started
+> - **SIM-P0:** Complete
+> - **SIM-P1:** Complete
+> - **SIM-P2:** Accepted
+> - **SIM-P3:** Accepted via Founder Interpretation Attestation Route
+> - **Simulation/Preview Alpha software scope:** Complete
+> - **Closure integration:** `a26195494f617ff32574966f491426d3e9f0d26b`
+> - **Hosted closure gate:** Quality gate `40736962525`
+> - **Preview implementation:** Complete for the accepted software scope
 > - **Studio/UI implementation:** Not started
-> - **Contract integration:** This bounded docs-only commit
+> - **Next:** Bounded STUDIO-P0 contract work
 > - **Physical hardware acceptance:** Separate and pending
+> - **Release, tag, and publication state:** Unchanged
 
 Normative words such as **must** and **must not** describe the founder-approved
-contract. They do not claim that the preview behavior is implemented. The
-contract is frozen by the approval recorded above; repository integration
-remains a separate bounded step.
+contract. The accepted SIM-P0–SIM-P3 software scope is complete on current
+main. SIM-P3 was accepted through the Founder Interpretation Attestation Route;
+the original zero-assistance live-session route did not pass, and failed
+attempts were not reclassified. Studio implementation, physical acceptance,
+and release evidence remain separate.
 
 ## 1. Purpose
 
@@ -397,7 +407,7 @@ Deliverables:
 Exit: a separate local process can inspect a running simulation without
 mutating it or reading private files.
 
-### SIM-P3 — Preview Acceptance and Handoff
+### SIM-P3 — Preview Acceptance and Handoff — Complete
 
 Deliverables:
 
@@ -406,8 +416,18 @@ Deliverables:
 - synchronized README/PRESEED/architecture/evidence status; and
 - a frozen handoff contract for Studio Lite.
 
-Exit: Simulation/Preview Alpha is complete in its software scope and Studio
-Lite may begin. Physical acceptance remains separate.
+Exit: complete via the Founder Interpretation Attestation Route. The original
+zero-assistance live-session route did not pass, and failed attempts were not
+reclassified. This route supplies E4 founder interpretation evidence only.
+Integration is `a26195494f617ff32574966f491426d3e9f0d26b`; hosted Quality gate
+[`40736962525`](https://github.com/ulasusakli/hiyelx/actions/runs/40736962525)
+passed Ubuntu job `122987995604` (`705 passed, 1 physical skipped`) and macOS
+Intel job `122987996143` (`macos-15-intel`, Intel/x86_64, `365 passed`). The
+installed-wheel output was exactly 29 lines, with `8/8` SIM markers and final
+marker `sim-preview-acceptance=passed`. Local Darwin/arm64 founder evidence is
+not hosted ARM64 portability evidence. The software scope is complete and
+ready only for bounded STUDIO-P0 contract work; Studio implementation has not
+started. Physical, release, and publication evidence remain separate.
 
 ## 13. Studio Lite handoff
 
@@ -468,8 +488,9 @@ Exact founder approval record:
 APPROVE SIM-P0 CONTRACT DEFAULTS
 ```
 
-This approval freezes the SIM-P0 contract. It does not start SIM-P1, integrate
-the document, publish a package, or create physical evidence.
+The accepted SIM-P0 contract and the SIM-P0–SIM-P3 software scope are integrated
+on current main. This does not start Studio implementation, publish a package,
+or create physical evidence.
 
 ## 16. Current status
 
@@ -479,9 +500,17 @@ SIM-P0 CONTRACT DRAFTED: YES
 SIM-P0 FOUNDER APPROVAL: YES
 SIM-P0 CONTRACT ACCEPTED: YES
 SIM-P0 INTEGRATED: YES
-SIM-P1 IMPLEMENTATION STARTED: NO
-SIMULATION/PREVIEW ALPHA COMPLETE: NO
+SIM-P0 COMPLETE: YES
+SIM-P1 COMPLETE: YES
+SIM-P2 ACCEPTED: YES
+SIM-P3 FOUNDER ATTESTATION ACCEPTED: YES
+SIM-P3 CONTRACT AMENDMENT INTEGRATED: YES
+SIM-P3 EVIDENCE INTEGRATED: YES
+SIM-P3 HOSTED ACCEPTED: YES
+SIM-P3 COMPLETE: YES
+SIMULATION/PREVIEW ALPHA COMPLETE: YES
+READY FOR STUDIO-P0: YES
 STUDIO LITE STARTED: NO
 PHYSICAL HARDWARE ACCEPTANCE: NO
-READY FOR BOUNDED SIM-P0 INTEGRATION: YES
+RELEASE/TAG/PUBLICATION STATE CHANGED: NO
 ```

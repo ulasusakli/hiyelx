@@ -78,7 +78,7 @@ hardware access.
 
 ### NEXT
 
-1. Simulation/Preview Alpha.
+1. **STUDIO-P0 — Studio Lite Observational MVP Contract**.
 
 ### DONE
 
@@ -187,6 +187,23 @@ hardware access.
   documents. RTO-4 closes Runtime Operations Alpha software/runtime acceptance
   only. It creates no runtime feature, package-version change, tag, release,
   registry publication, hosted ARM64 acceptance, or physical-hardware claim.
+- SIM-P0 canonical preview schema/model complete; SIM-P1 in-process preview
+  model complete; SIM-P2 local adapter, public CLI, and installed-wheel
+  acceptance complete.
+- SIM-P3 founder interpretation accepted through the Founder Interpretation
+  Attestation Route and handed off for bounded STUDIO-P0 contract work. The
+  original zero-assistance live-session route did not pass; failed attempts
+  were not reclassified.
+- Simulation/Preview Alpha software scope complete. The amendment and evidence
+  were integrated at `a26195494f617ff32574966f491426d3e9f0d26b`; Quality gate
+  [`40736962525`](https://github.com/ulasusakli/hiyelx/actions/runs/40736962525)
+  passed Ubuntu job `122987995604` (`705 passed, 1 physical skipped`) and
+  macOS Intel job `122987996143` (`macos-15-intel`, Intel/x86_64, `365 passed`).
+- Installed-wheel output was exactly 29 lines with all `8/8` SIM markers ending
+  `sim-preview-acceptance=passed`. Package `0.2.0a1`, tag/release/publication
+  state, and physical acceptance state are unchanged. Studio Lite
+  implementation has not started; physical acceptance remains separate and
+  pending.
 
 ### PARALLEL / DEFERRED
 

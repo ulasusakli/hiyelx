@@ -12,6 +12,13 @@
 > - **Technical baseline:** SIM-P0, SIM-P1, and SIM-P2 accepted
 > - **Accepted baseline revision:** `0d64bbf6f6a814f3a2851757b5d965043c778233`
 > - **Accepted hosted baseline:** Quality gate `40182452809`
+> - **Contract amendment integration:** `a26195494f617ff32574966f491426d3e9f0d26b`
+> - **Founder attestation evidence integration:** `a26195494f617ff32574966f491426d3e9f0d26b`
+> - **Hosted closure gate:** Quality gate `40736962525`
+> - **Ubuntu closure job:** `122987995604` — `705 passed, 1 physical skipped`
+> - **macOS Intel closure job:** `122987996143` — `macos-15-intel`, Intel/x86_64, `365 passed`
+> - **Hosted verifier:** Exact 29-line output; SIM markers `8/8`; final `sim-preview-acceptance=passed`
+> - **Founder attestation evidence state:** Accepted / integrated (E4)
 > - **SIM-P3 session preparation:** Historical attempts occurred; no session is currently prepared
 > - **SIM-P3 session execution:** Historical live-session attempts occurred; none was accepted and no session is currently running
 > - **Studio Lite implementation:** Not started
@@ -94,7 +101,7 @@ one layer into another.
 | E1 | SIM-P1 in-process technical evidence | Accepted | Typed schema, time/revision semantics, determinism, coherence, and read-only behavior inside one process. |
 | E2 | SIM-P2 installed-wheel automated evidence | Accepted | One wheel, one non-editable environment, public CLI, negative matrix, cleanup, and exact 29-line verifier. |
 | E3 | Ubuntu/macOS Intel hosted portability evidence | Accepted | Exact-SHA Ubuntu full gate and GitHub-hosted macOS Intel focused gate. It is not human usability evidence. |
-| E4 | SIM-P3 founder interpretation evidence | Founder Interpretation Attestation candidate exists; awaiting bounded review and integration; accepted/integrated E4 evidence does not yet exist. | The candidate does not establish SIM-P3 completion. |
+| E4 | SIM-P3 founder interpretation evidence | Accepted / integrated via the Founder Interpretation Attestation Route at `a26195494f617ff32574966f491426d3e9f0d26b`; hosted closure Quality gate `40736962525`. | Founder interpretation evidence only; original zero-assistance live-session route did not pass and failed attempts were not reclassified. |
 | E5 | Studio Lite UX evidence | Future | Evidence from a later implemented observational UI. SIM-P3 handoff is not Studio usability proof. |
 | E6 | Physical hardware evidence | Separate and pending | Requires explicit physical authorization and its own evidence; simulation cannot substitute. |
 | E7 | Release, tag, and publication evidence | Separate and pending | Requires a separate release decision; acceptance does not publish anything. |
@@ -615,17 +622,28 @@ evidence creation, commit, push, or Studio implementation.
 SIM-P2 ACCEPTED: YES
 SIM-P3 FOUNDER CONTRACT APPROVAL: YES
 SIM-P3 CONTRACT ACCEPTED: YES
-SIM-P3 CONTRACT INTEGRATED: NO
+SIM-P3 FOUNDER ATTESTATION AMENDMENT APPROVAL: YES
+SIM-P3 CONTRACT AMENDMENT INTEGRATED: YES
 SIM-P3 SESSION PREPARED: NO
 SIM-P3 SESSION STARTED: NO
-SIM-P3 FOUNDER ACCEPTANCE: NO
-SIM-P3 COMPLETE: NO
+SIM-P3 FOUNDER ATTESTATION ACCEPTED: YES
+SIM-P3 EVIDENCE INTEGRATED: YES
+SIM-P3 HOSTED ACCEPTED: YES
+ORIGINAL ZERO-ASSISTANCE SESSION PASSED: NO
+FAILED ATTEMPTS RECLASSIFIED: NO
+SIM-P3 COMPLETE: YES
+SIMULATION/PREVIEW ALPHA COMPLETE: YES
+READY FOR STUDIO-P0: YES
 STUDIO LITE STARTED: NO
 PHYSICAL HARDWARE ACCEPTANCE: NO
 RELEASE/TAG/PUBLICATION STATE CHANGED: NO
 ```
 
-Founder approval of this contract is not session preparation or execution and
-does not authorize repository integration. No owner, wheel environment,
-evidence record, Studio implementation, physical operation, release, tag,
-publication, version change, commit, or push is authorized here.
+The contract amendment and E4 founder attestation evidence are integrated at
+`a26195494f617ff32574966f491426d3e9f0d26b`; hosted closure passed at Quality
+gate `40736962525`. No SIM-P3 session is currently prepared or running. The
+attestation route is accepted; the original zero-assistance live-session route
+did not pass, and failed attempts remain failed/non-candidate. The next work is
+limited to a bounded STUDIO-P0 contract. Studio implementation, physical
+acceptance, release, tag, publication, and version changes remain outside this
+contract status.
