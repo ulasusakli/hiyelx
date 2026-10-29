@@ -52,6 +52,47 @@ _RUN_D = "44444444-4444-4444-8444-444444444444"
 _RUN_E = "55555555-5555-4555-8555-555555555555"
 _START = datetime(2026, 10, 18, 10, 11, 12, 123456, tzinfo=UTC)
 _FINGERPRINT = "a" * 64
+_CHILD_DIAGNOSTIC_OUTPUT_LIMIT = 1024
+
+
+def _format_child_process_diagnostics(
+    results: tuple[tuple[int | None, str, str], ...],
+    *,
+    task_root: Path,
+) -> str:
+    """Format bounded, ordered child results while redacting local paths."""
+    redactions = tuple(
+        path
+        for path in (str(task_root), str(Path.home()))
+        if path and path != "/"
+    )
+
+    def bounded_repr(output: str) -> str:
+        sanitized = output
+        for path in redactions:
+            sanitized = sanitized.replace(path, "<redacted-path>")
+        if len(sanitized) > _CHILD_DIAGNOSTIC_OUTPUT_LIMIT:
+            sanitized = (
+                sanitized[:_CHILD_DIAGNOSTIC_OUTPUT_LIMIT]
+                + "<truncated>"
+            )
+        return repr(sanitized)
+
+    lines: list[str] = []
+    for ordinal, (returncode, stdout, stderr) in enumerate(results, start=1):
+        signal = (
+            f" (signal {-returncode})"
+            if returncode is not None and returncode < 0
+            else ""
+        )
+        lines.extend(
+            (
+                f"child {ordinal}: returncode={returncode!r}{signal}",
+                f"  stdout={bounded_repr(stdout)}",
+                f"  stderr={bounded_repr(stderr)}",
+            )
+        )
+    return "\n".join(lines)
 
 
 class _ClockAbort(BaseException):
@@ -279,6 +320,31 @@ def test_initialization_lock_contention_is_bounded_and_recoverable(tmp_path: Pat
     recovered.close()
 
 
+def test_child_process_diagnostics_are_bounded_ordered_and_sanitized(
+    tmp_path: Path,
+) -> None:
+    results = (
+        (0, "opened", ""),
+        (7, f"failed at {tmp_path / 'history.sqlite3'}", "child error"),
+        (-9, "x" * (_CHILD_DIAGNOSTIC_OUTPUT_LIMIT + 1), ""),
+    )
+
+    formatted = _format_child_process_diagnostics(results, task_root=tmp_path)
+
+    assert formatted.index("child 1:") < formatted.index("child 2:")
+    assert formatted.index("child 2:") < formatted.index("child 3:")
+    assert "child 1: returncode=0" in formatted
+    assert "stdout='opened'" in formatted
+    assert "stderr=''" in formatted
+    assert "child 2: returncode=7" in formatted
+    assert "<redacted-path>" in formatted
+    assert str(tmp_path) not in formatted
+    assert "stderr='child error'" in formatted
+    assert "child 3: returncode=-9 (signal 9)" in formatted
+    assert "<truncated>" in formatted
+    assert len(formatted.splitlines()[6]) <= _CHILD_DIAGNOSTIC_OUTPUT_LIMIT + 40
+
+
 def test_concurrent_first_initialization_is_bounded_and_recoverable(
     tmp_path: Path,
 ) -> None:
@@ -318,8 +384,15 @@ else:
     )
     gate.touch()
     results = tuple(process.communicate(timeout=10) for process in processes)
+    child_results = tuple(
+        (process.returncode, stdout, stderr)
+        for process, (stdout, stderr) in zip(processes, results, strict=True)
+    )
 
-    assert all(process.returncode == 0 for process in processes)
+    assert all(returncode == 0 for returncode, _stdout, _stderr in child_results), (
+        "concurrent initialization child process failure:\n"
+        + _format_child_process_diagnostics(child_results, task_root=tmp_path)
+    )
     outcomes = {stdout.strip() for stdout, _stderr in results}
     assert "opened" in outcomes
     assert outcomes <= {"opened", "rejected"}
