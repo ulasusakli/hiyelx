@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>HIYELX Studio Lite — Static shell</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="studio.css" />
+    <script src="fixtures.js" defer></script>
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="app-header">
+        <a class="brand" href="#main" aria-label="HIYELX Studio Lite home">
+          <span class="brand-mark" aria-hidden="true">H</span>
+          <span class="brand-name">HIYELX <span>Studio Lite</span></span>
+        </a>
+        <div class="header-status">
+          <span class="simulation-badge"><span aria-hidden="true">●</span> SIMULATION</span>
+          <span class="connection-badge" id="connection-badge" data-severity="neutral">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span id="connection-label">Fixture preview</span>
+          </span>
+        </div>
+      </header>
+
+      <main id="main" class="main-content">
+        <section class="intro" aria-labelledby="page-title">
+          <div>
+            <p class="eyebrow">OBSERVATION · LOCAL · READ ONLY</p>
+            <h1 id="page-title">Simulation overview</h1>
+            <p class="intro-copy">A clear view of a simulation snapshot. This static prototype uses fixture data and is not connected to a runtime.</p>
+          </div>
+          <span class="prototype-tag">STATIC PROTOTYPE</span>
+        </section>
+
+        <section class="session-panel panel" aria-labelledby="session-heading">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">SESSION</p>
+              <h2 id="session-heading">Local session</h2>
+            </div>
+            <span class="state-pill" id="state-pill" data-severity="neutral">Fixture preview</span>
+          </div>
+          <div class="session-controls">
+            <div class="field-group">
+              <label for="session-select">Session</label>
+              <select id="session-select" disabled aria-describedby="session-help">
+                <option>Demo · sim_motor</option>
+              </select>
+              <p class="field-help" id="session-help">A future local host will provide observable sessions. No session discovery runs in this prototype.</p>
+            </div>
+            <div class="refresh-info">
+              <span class="field-label">Snapshot freshness</span>
+              <span class="refresh-value" id="freshness">Fixture — no live refresh</span>
+              <span class="field-help">No polling or network requests in this static shell.</span>
+            </div>
+          </div>
+          <div class="state-message" id="state-message" data-severity="neutral" role="status" aria-live="polite" aria-atomic="true">
+            <span class="message-icon" aria-hidden="true">i</span>
+            <span id="state-message-text">Fixture preview only. No runtime is connected.</span>
+          </div>
+        </section>
+
+        <section class="runtime-grid" aria-label="Runtime summary">
+          <article class="summary-card panel">
+            <span class="field-label">Runtime state</span>
+            <strong id="runtime-state">running</strong>
+            <span class="summary-note">Manager snapshot state</span>
+          </article>
+          <article class="summary-card panel">
+            <span class="field-label">Resources</span>
+            <strong id="resource-count">1</strong>
+            <span class="summary-note">Observable resources</span>
+          </article>
+          <article class="summary-card panel">
+            <span class="field-label">Snapshot</span>
+            <strong id="snapshot-state">Ready</strong>
+            <span class="summary-note">Fixture state, not live status</span>
+          </article>
+        </section>
+
+        <section class="resources-section" aria-labelledby="resources-heading">
+          <div class="section-heading resource-heading">
+            <div>
+              <p class="eyebrow">ORDERED PREVIEW RESOURCES</p>
+              <h2 id="resources-heading">Resources</h2>
+            </div>
+            <span class="field-help">Order follows the preview schema fixture.</span>
+          </div>
+          <div class="resource-grid" id="resource-grid" aria-live="off"></div>
+          <div class="empty-panel panel" id="empty-state" hidden>
+            <span class="empty-icon" aria-hidden="true">—</span>
+            <h3 id="empty-title">No resource snapshot</h3>
+            <p id="empty-copy">Resource values appear after a valid snapshot is available.</p>
+          </div>
+        </section>
+
+        <details class="fixture-tools panel">
+          <summary>Preview interface states (local fixtures only)</summary>
+          <p>These controls switch static example data so the P1 screen states can be inspected. They do not contact or change HIYELX.</p>
+          <label for="fixture-select">Fixture state</label>
+          <select id="fixture-select"></select>
+        </details>
+      </main>
+
+      <footer class="app-footer">
+        <p><strong>Local only · Read only · Simulation values are not physical proof.</strong></p>
+        <p>Health describes the represented software/simulation observation only. It does not establish physical motor or sensor health, safe operation, physics fidelity, or certification.</p>
+      </footer>
+    </div>
+    <div class="viewport-fallback" role="status">
+      <span class="simulation-badge"><span aria-hidden="true">●</span> SIMULATION</span>
+      <h2>Wider view required</h2>
+      <p>This prototype is designed for viewports at least 320 CSS pixels wide. Increase the window width to inspect the dashboard.</p>
+    </div>
+  </body>
+</html>
