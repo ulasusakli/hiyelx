@@ -1,5 +1,6 @@
 import asyncio
 import json
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -41,12 +42,75 @@ from hiyelx.simulation import (
     SimulationPreviewResourceSnapshot,
     SimulationPreviewSnapshot,
 )
+from hiyelx.studio import launcher as studio_launcher
+from hiyelx.studio.launcher import (
+    ReadyCallback,
+    StudioAssetError,
+    StudioBrowserOpenError,
+    StudioLauncherLifecycleError,
+)
+
+STUDIO_SOURCE_ASSETS = Path(__file__).parents[2] / "studio"
+_REAL_TEMPORARY_DIRECTORY = tempfile.TemporaryDirectory
+
+
+class _CliStudioHost:
+    def __init__(self, asset_root: Path, events: list[str]) -> None:
+        self.asset_root = asset_root
+        self.events = events
+        self.launch_url = "http://127.0.0.1:43210/#capability=" + "x" * 43
+
+    async def start(self) -> None:
+        self.events.append("host-start")
+
+    async def close(self) -> None:
+        self.events.append("host-close")
+
+
+class _CleanupFailingTemporaryDirectory:
+    def __init__(self, *, prefix: str) -> None:
+        self._owned = _REAL_TEMPORARY_DIRECTORY(prefix=prefix)
+        self.name = self._owned.name
+        self.cleanup_calls = 0
+
+    def cleanup(self) -> None:
+        self.cleanup_calls += 1
+        self._owned.cleanup()
+        raise OSError("private temporary path=/private/tmp capability=secret pid=123")
+
+
+class _ReadinessFailureStream:
+    def __init__(self, failure: str) -> None:
+        self.failure = failure
+        self.accepted = ""
+
+    def write(self, value: str) -> int:
+        if self.failure == "write":
+            raise OSError("private stdout path=/private/tmp capability=secret pid=123")
+        self.accepted += value
+        return len(value)
+
+    def flush(self) -> None:
+        if self.failure == "flush":
+            raise OSError("private stdout path=/private/tmp capability=secret pid=123")
+
 
 EXPECTED_TRANSCRIPT = tuple(
     (
         Path(__file__).parents[2] / "examples/expected/sim-motor.txt"
     ).read_text(encoding="utf-8").splitlines()
 )
+
+
+@pytest.fixture
+def studio_asset_source(tmp_path: Path) -> Path:
+    source = tmp_path / "installed" / "hiyelx" / "studio" / "assets"
+    source.mkdir(parents=True, mode=0o700)
+    for name in studio_launcher.STUDIO_ASSET_NAMES:
+        target = source / name
+        target.write_bytes((STUDIO_SOURCE_ASSETS / name).read_bytes())
+        target.chmod(0o600)
+    return source
 
 
 def test_cli_help_and_demo_dispatch(
@@ -62,6 +126,7 @@ def test_cli_help_and_demo_dispatch(
     assert "scaffold" in help_output
     assert "hardware" in help_output
     assert "runtime" in help_output
+    assert "studio" in help_output
 
     async def fake_demo() -> tuple[str, ...]:
         return ("demo=dispatched",)
@@ -69,6 +134,223 @@ def test_cli_help_and_demo_dispatch(
     monkeypatch.setattr(cli, "run_sim_motor_demo", fake_demo)
     assert cli.main(["demo", "sim-motor"]) == cli.SUCCESS
     assert capsys.readouterr().out == "demo=dispatched\n"
+
+
+def test_studio_dispatch_reports_readiness_then_confirmed_cleanup(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    async def fake_launch_studio(*, ready_callback: ReadyCallback | None = None) -> None:
+        nonlocal calls
+        calls += 1
+        assert ready_callback is not None
+        assert capsys.readouterr() == ("", "")
+        ready_callback()
+        captured = capsys.readouterr()
+        assert captured.out == "studio=running\n"
+        assert captured.err == ""
+
+    monkeypatch.setattr(cli, "launch_studio", fake_launch_studio)
+
+    assert cli.main(["studio"]) == cli.SUCCESS
+    captured = capsys.readouterr()
+    assert captured.out == "studio=stopped\n"
+    assert captured.err == ""
+    assert calls == 1
+
+
+@pytest.mark.parametrize("cancellation", (KeyboardInterrupt(), asyncio.CancelledError()))
+def test_studio_cancellation_after_readiness_reports_clean_stop(
+    cancellation: BaseException,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def cancelled(*, ready_callback: ReadyCallback | None = None) -> None:
+        assert ready_callback is not None
+        ready_callback()
+        raise cancellation
+
+    monkeypatch.setattr(cli, "launch_studio", cancelled)
+
+    assert cli.main(["studio"]) == cli.SUCCESS
+    captured = capsys.readouterr()
+    assert captured.out == "studio=running\nstudio=stopped\n"
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize(
+    "error",
+    (
+        StudioAssetError(),
+        StudioBrowserOpenError(),
+        StudioLauncherLifecycleError(),
+        OSError("private capability=secret-token path=/private/tmp pid=123"),
+    ),
+)
+def test_studio_startup_failures_are_fixed_and_sanitized(
+    error: Exception,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail(*, ready_callback: ReadyCallback | None = None) -> None:
+        assert ready_callback is not None
+        raise error
+
+    monkeypatch.setattr(cli, "launch_studio", fail)
+
+    assert cli.main(["studio"]) == cli.FAILURE
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "error: Studio could not start\n"
+    for private in ("capability", "secret-token", "/private/", "pid"):
+        assert private not in captured.err
+
+
+def test_studio_shutdown_failure_never_reports_stopped(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail(*, ready_callback: ReadyCallback | None = None) -> None:
+        assert ready_callback is not None
+        ready_callback()
+        raise StudioLauncherLifecycleError
+
+    monkeypatch.setattr(cli, "launch_studio", fail)
+
+    assert cli.main(["studio"]) == cli.FAILURE
+    captured = capsys.readouterr()
+    assert captured.out == "studio=running\n"
+    assert captured.err == "error: Studio could not stop\n"
+    assert "studio=stopped" not in captured.out
+
+
+def test_studio_requires_readiness_and_has_no_runtime_or_hardware_dispatch(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    async def return_without_readiness(
+        *,
+        ready_callback: ReadyCallback | None = None,
+    ) -> None:
+        nonlocal calls
+        calls += 1
+        assert ready_callback is not None
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("Studio CLI must not invoke Runtime or hardware operations")
+
+    monkeypatch.setattr(cli, "launch_studio", return_without_readiness)
+    monkeypatch.setattr(cli, "run_local_runtime", forbidden)
+    monkeypatch.setattr(cli, "request_stop", forbidden)
+    monkeypatch.setattr(cli, "preflight_hardware_acceptance", forbidden)
+
+    assert cli.main(["studio"]) == cli.FAILURE
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "error: Studio could not start\n"
+    assert calls == 1
+
+
+def test_studio_asset_cleanup_failure_after_readiness_is_a_stop_failure(
+    studio_asset_source: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    temporary_directories: list[_CleanupFailingTemporaryDirectory] = []
+
+    def temporary_directory(*, prefix: str) -> _CleanupFailingTemporaryDirectory:
+        directory = _CleanupFailingTemporaryDirectory(prefix=prefix)
+        temporary_directories.append(directory)
+        return directory
+
+    def host_factory(asset_root: Path) -> _CliStudioHost:
+        return _CliStudioHost(asset_root, events)
+
+    def browser_opener(_url: str) -> bool:
+        events.append("browser-open")
+        return True
+
+    async def shutdown_waiter() -> None:
+        events.append("wait")
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("Studio CLI must not invoke Runtime or hardware operations")
+
+    monkeypatch.setattr(studio_launcher, "_installed_asset_root", lambda: studio_asset_source)
+    monkeypatch.setattr(studio_launcher, "StudioHost", host_factory)
+    monkeypatch.setattr(studio_launcher, "_open_default_browser", browser_opener)
+    monkeypatch.setattr(studio_launcher, "_wait_forever", shutdown_waiter)
+    monkeypatch.setattr(studio_launcher.tempfile, "TemporaryDirectory", temporary_directory)
+    monkeypatch.setattr(cli, "run_local_runtime", forbidden)
+    monkeypatch.setattr(cli, "request_stop", forbidden)
+    monkeypatch.setattr(cli, "preflight_hardware_acceptance", forbidden)
+
+    assert cli.main(["studio"]) == cli.FAILURE
+    captured = capsys.readouterr()
+    assert captured.out == "studio=running\n"
+    assert "studio=stopped" not in captured.out
+    assert captured.err == "error: Studio could not stop\n"
+    assert events == ["host-start", "browser-open", "wait", "host-close"]
+    assert len(temporary_directories) == 1
+    temporary = temporary_directories[0]
+    assert temporary.cleanup_calls == 1
+    assert not Path(temporary.name).exists()
+    for private in ("capability", "secret", "/private/", "pid", "43210"):
+        assert private not in captured.out + captured.err
+
+
+@pytest.mark.parametrize(
+    ("failure", "accepted_stdout"),
+    (("write", ""), ("flush", "studio=running\n")),
+)
+def test_studio_readiness_output_failure_is_sanitized_and_closes_host(
+    failure: str,
+    accepted_stdout: str,
+    studio_asset_source: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    stream = _ReadinessFailureStream(failure)
+
+    def host_factory(asset_root: Path) -> _CliStudioHost:
+        return _CliStudioHost(asset_root, events)
+
+    def browser_opener(_url: str) -> bool:
+        events.append("browser-open")
+        return True
+
+    async def forbidden_wait() -> None:
+        pytest.fail("Readiness failure must occur before foreground waiting")
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("Studio CLI must not invoke Runtime or hardware operations")
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(studio_launcher, "_installed_asset_root", lambda: studio_asset_source)
+        patcher.setattr(studio_launcher, "StudioHost", host_factory)
+        patcher.setattr(studio_launcher, "_open_default_browser", browser_opener)
+        patcher.setattr(studio_launcher, "_wait_forever", forbidden_wait)
+        patcher.setattr(cli, "run_local_runtime", forbidden)
+        patcher.setattr(cli, "request_stop", forbidden)
+        patcher.setattr(cli, "preflight_hardware_acceptance", forbidden)
+        patcher.setattr(cli.sys, "stdout", stream)
+        exit_code = cli.main(["studio"])
+
+    captured = capsys.readouterr()
+    assert exit_code == cli.FAILURE
+    assert stream.accepted == accepted_stdout
+    assert "studio=stopped" not in stream.accepted
+    assert captured.out == ""
+    assert captured.err == "error: Studio could not start\n"
+    assert events == ["host-start", "browser-open", "host-close"]
+    for private in ("capability", "secret", "/private/", "pid", "43210"):
+        assert private not in stream.accepted + captured.out + captured.err
 
 
 def test_validate_config_success(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

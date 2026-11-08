@@ -74,6 +74,7 @@ from hiyelx.simulation import (
     register_simulated_motor,
     render_simulation_preview_json,
 )
+from hiyelx.studio.launcher import StudioLauncherError, launch_studio
 
 SUCCESS = 0
 FAILURE = 1
@@ -111,6 +112,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             arguments.path,
             physical_operation_consent=arguments.physical_consent,
         )
+    if arguments.command == "studio":
+        return _studio()
     if arguments.command == "runtime":
         if arguments.runtime == "start":
             return _runtime_start(arguments.path, session=arguments.session)
@@ -180,6 +183,11 @@ def _parser() -> argparse.ArgumentParser:
     preflight.add_argument("path", type=Path)
     preflight.add_argument("--physical-consent")
 
+    commands.add_parser(
+        "studio",
+        help="open the local read-only Studio in a browser",
+    )
+
     runtime = commands.add_parser(
         "runtime",
         help="control one foreground local simulation runtime",
@@ -235,6 +243,37 @@ def _parser() -> argparse.ArgumentParser:
     )
     runs_prune.add_argument("--keep", required=True, type=_retention_keep)
     return parser
+
+
+def _studio() -> int:
+    running = False
+
+    def ready() -> None:
+        nonlocal running
+        print("studio=running", flush=True)
+        running = True
+
+    try:
+        asyncio.run(launch_studio(ready_callback=ready))
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        if not running:
+            print("error: Studio could not start", file=sys.stderr)
+            return FAILURE
+    except StudioLauncherError:
+        action = "stop" if running else "start"
+        print(f"error: Studio could not {action}", file=sys.stderr)
+        return FAILURE
+    except Exception:
+        action = "stop" if running else "start"
+        print(f"error: Studio could not {action}", file=sys.stderr)
+        return FAILURE
+    else:
+        if not running:
+            print("error: Studio could not start", file=sys.stderr)
+            return FAILURE
+
+    print("studio=stopped")
+    return SUCCESS
 
 
 def _runtime_start(path: Path, *, session: str) -> int:

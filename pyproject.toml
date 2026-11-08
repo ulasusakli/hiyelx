@@ -35,6 +35,11 @@ packages = ["src/hiyelx"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "examples/configs/sim-motor.yaml" = "hiyelx/examples/configs/sim-motor.yaml"
+"studio/index.html" = "hiyelx/studio/assets/index.html"
+"studio/studio.css" = "hiyelx/studio/assets/studio.css"
+"studio/fixtures.js" = "hiyelx/studio/assets/fixtures.js"
+"studio/app.js" = "hiyelx/studio/assets/app.js"
+"studio/host-client.js" = "hiyelx/studio/assets/host-client.js"
 
 [tool.ruff]
 target-version = "py312"
