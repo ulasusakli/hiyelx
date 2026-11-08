@@ -56,6 +56,8 @@ MIN_PREVIEW_RESOURCES = 1
 MAX_PREVIEW_RESOURCES = 1
 PREVIEW_REQUEST_TIMEOUT_SECONDS = 3.0
 STATE_DIRECTORY_ENV = "HIYELX_RUNTIME_STATE_DIR"
+MAX_SESSION_DISCOVERY_ENTRIES = 128
+MAX_OBSERVABLE_SESSIONS = 64
 _MANIFEST_NAME = "manifest.json"
 _MANIFEST_TEMP_NAME = ".manifest.tmp"
 _LOCK_NAME = "owner.lock"
@@ -590,6 +592,40 @@ def resolve_state_directory(
             raise UnsafeSessionPathError
         return path
     return Path("/tmp") / f"hiyelx-runtime-{os.geteuid()}"
+
+
+def list_observable_sessions(
+    *,
+    state_directory: Path | None = None,
+) -> tuple[str, ...]:
+    """Return sorted active sessions without changing any runtime artifact."""
+    _require_supported_platform()
+    root = state_directory or resolve_state_directory()
+    if not root.is_absolute():
+        raise UnsafeSessionPathError
+    if not _lexists(root):
+        return ()
+
+    root_before = _validate_owned_path(root, expected_kind="directory")
+    names = _bounded_directory_entry_names(
+        root,
+        limit=MAX_SESSION_DISCOVERY_ENTRIES,
+    )
+    observable: list[str] = []
+    for name in sorted(names):
+        try:
+            session = validate_session_id(name)
+        except InvalidSessionIdError:
+            raise UnsafeSessionPathError from None
+        if _is_observable_session(SessionLayout(root, session)):
+            observable.append(session)
+            if len(observable) > MAX_OBSERVABLE_SESSIONS:
+                raise UnsafeSessionPathError
+
+    root_after = _validate_owned_path(root, expected_kind="directory")
+    if _path_status_signature(root_before) != _path_status_signature(root_after):
+        raise UnsafeSessionPathError
+    return tuple(observable)
 
 
 def validate_simulation_config(config: RuntimeConfig) -> None:
@@ -1243,7 +1279,11 @@ async def _request(
     _require_supported_platform()
     validated_session = validate_session_id(session)
     root = state_directory or resolve_state_directory()
-    layout = _locate_active_session(root, validated_session)
+    layout = (
+        _locate_active_session_read_only(root, validated_session)
+        if command is ControlCommand.PREVIEW
+        else _locate_active_session(root, validated_session)
+    )
     reader: asyncio.StreamReader
     writer: asyncio.StreamWriter
     try:
@@ -1680,6 +1720,101 @@ def _preflight_directory_entries(
         _validate_owned_path(entry, expected_kind=expected[name])
 
 
+def _bounded_directory_entry_names(directory: Path, *, limit: int) -> tuple[str, ...]:
+    names: list[str] = []
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if len(names) >= limit:
+                    raise UnsafeSessionPathError
+                names.append(entry.name)
+    except UnsafeSessionPathError:
+        raise
+    except OSError as error:
+        raise UnsafeSessionPathError from error
+    return tuple(names)
+
+
+def _is_observable_session(layout: SessionLayout) -> bool:
+    directory_before, entries_before = _validated_discovery_session(layout)
+    lock_fd = _open_lock(layout.lock, create=False)
+    try:
+        held_before = _session_lock_is_held(lock_fd)
+        if held_before:
+            if set(entries_before) != {_LOCK_NAME, _MANIFEST_NAME, _SOCKET_NAME}:
+                raise UnsafeSessionPathError
+            _read_manifest(layout)
+        elif _MANIFEST_NAME in entries_before:
+            _read_manifest(layout)
+
+        held_after = _session_lock_is_held(lock_fd)
+        directory_after, entries_after = _validated_discovery_session(layout)
+        if held_before is not held_after:
+            raise UnsafeSessionPathError
+        if _path_status_signature(directory_before) != _path_status_signature(
+            directory_after
+        ):
+            raise UnsafeSessionPathError
+        if set(entries_before) != set(entries_after) or any(
+            _path_status_signature(entries_before[name])
+            != _path_status_signature(entries_after[name])
+            for name in entries_before
+        ):
+            raise UnsafeSessionPathError
+        return held_before
+    finally:
+        with suppress(OSError):
+            os.close(lock_fd)
+
+
+def _validated_discovery_session(
+    layout: SessionLayout,
+) -> tuple[os.stat_result, dict[str, os.stat_result]]:
+    directory_status = _validate_owned_path(layout.directory, expected_kind="directory")
+    names = _bounded_directory_entry_names(layout.directory, limit=3)
+    expected = {
+        _LOCK_NAME: "file",
+        _MANIFEST_NAME: "file",
+        _SOCKET_NAME: "socket",
+    }
+    if _LOCK_NAME not in names or not set(names).issubset(expected):
+        raise UnsafeSessionPathError
+    statuses = {
+        name: _validate_owned_path(layout.directory / name, expected_kind=expected[name])
+        for name in names
+    }
+    return directory_status, statuses
+
+
+def _session_lock_is_held(lock_fd: int) -> bool:
+    fcntl = _fcntl()
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    except OSError as error:
+        raise UnsafeSessionPathError from error
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+    except OSError as error:
+        raise UnsafeSessionPathError from error
+    return False
+
+
+def _path_status_signature(
+    status: os.stat_result,
+) -> tuple[int, int, int, int, int, int, int]:
+    return (
+        status.st_dev,
+        status.st_ino,
+        status.st_mode,
+        status.st_uid,
+        status.st_size,
+        status.st_mtime_ns,
+        status.st_ctime_ns,
+    )
+
+
 def _write_manifest_atomic(layout: SessionLayout, manifest: SessionManifest) -> None:
     document = {
         "config_fingerprint": manifest.config_fingerprint,
@@ -1734,8 +1869,19 @@ def _read_manifest(layout: SessionLayout) -> SessionManifest:
             os.close(file_descriptor)
         if len(encoded) > MAX_MESSAGE_BYTES:
             raise UnsafeSessionPathError
-        document = cast(object, json.loads(encoded.decode("utf-8")))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        document = cast(
+            object,
+            json.loads(
+                encoded.decode("utf-8"),
+                object_pairs_hook=_reject_duplicate_object_keys,
+            ),
+        )
+    except (
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        ControlProtocolError,
+    ) as error:
         raise UnsafeSessionPathError from error
     if not isinstance(document, dict):
         raise UnsafeSessionPathError
@@ -1753,7 +1899,8 @@ def _read_manifest(layout: SessionLayout) -> SessionManifest:
     pid = values["pid"]
     session = values["session"]
     if (
-        values["protocol_version"] != PROTOCOL_VERSION
+        type(values["protocol_version"]) is not int
+        or values["protocol_version"] != PROTOCOL_VERSION
         or not isinstance(fingerprint, str)
         or len(fingerprint) != 64
         or any(character not in "0123456789abcdef" for character in fingerprint)
@@ -1797,6 +1944,18 @@ def _locate_active_session(root: Path, session: str) -> SessionLayout:
             os.close(lock_fd)
     _read_manifest(layout)
     _validate_owned_path(layout.socket, expected_kind="socket")
+    return layout
+
+
+def _locate_active_session_read_only(root: Path, session: str) -> SessionLayout:
+    if not _lexists(root):
+        raise SessionNotRunningError
+    _validate_owned_path(root, expected_kind="directory")
+    layout = SessionLayout(root, session)
+    if not _lexists(layout.directory):
+        raise SessionNotRunningError
+    if not _is_observable_session(layout):
+        raise SessionNotRunningError
     return layout
 
 
