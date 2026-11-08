@@ -1,12 +1,14 @@
 import asyncio
 import json
 import os
+import selectors
 import socket
 import stat
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -38,6 +40,10 @@ from hiyelx.studio.application import (
     get_preview,
 )
 
+_LOCK_HELPER_STARTUP_TIMEOUT_SECONDS = 15.0
+_LOCK_HELPER_CLEANUP_TIMEOUT_SECONDS = 3.0
+_LOCK_HELPER_DIAGNOSTIC_LIMIT = 2_000
+
 _LOCK_PROCESS_SCRIPT = r"""
 import fcntl
 import os
@@ -47,20 +53,27 @@ from pathlib import Path
 
 mode = sys.argv[1]
 if mode == "owner":
+    print("progress:bootstrap", flush=True)
     from hiyelx.runtime.control import reserve_session
 
+    print("progress:control-imported", flush=True)
     state = Path(sys.argv[2])
     session = sys.argv[3]
     owned = reserve_session(session, state_directory=state)
-    listener = socket.socket(socket.AF_UNIX)
+    print("progress:session-reserved", flush=True)
+    listener = None
     try:
+        listener = socket.socket(socket.AF_UNIX)
         listener.bind(str(owned.layout.socket))
         os.chmod(owned.layout.socket, 0o600, follow_symlinks=False)
+        print("progress:socket-bound", flush=True)
         owned.publish("0" * 64)
+        print("progress:session-published", flush=True)
         print("locked", flush=True)
         sys.stdin.readline()
     finally:
-        listener.close()
+        if listener is not None:
+            listener.close()
         if not owned.cleanup(final=True):
             raise SystemExit(3)
     raise SystemExit(0)
@@ -166,6 +179,19 @@ def test_independent_runtime_owner_keeps_exclusive_lock_during_discovery(
         _stop_lock_process(owner)
 
     assert not (discovery_state_directory / "owned").exists()
+
+
+def test_lock_helper_early_exit_is_diagnostic_and_releases_descriptors(
+    discovery_state_directory: Path,
+) -> None:
+    lock = discovery_state_directory / "diagnostic.lock"
+    lock.write_bytes(b"")
+    lock.chmod(0o600)
+
+    with pytest.raises(AssertionError, match="exited before readiness.*returncode=4"):
+        _start_lock_process("invalid", lock)
+
+    assert _independent_process_can_lock(lock)
 
 
 def test_stale_lock_probe_releases_before_return_and_between_repeated_calls(
@@ -634,33 +660,170 @@ def _start_lock_process(
         stderr=subprocess.PIPE,
         text=True,
     )
-    assert process.stdout is not None
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        ready = executor.submit(process.stdout.readline)
-        try:
-            line = ready.result(timeout=3)
-        except TimeoutError:
-            process.kill()
-            process.communicate(timeout=3)
-            raise AssertionError("lock helper readiness timed out") from None
-    if line != "locked\n":
-        process.kill()
-        process.communicate(timeout=3)
-        raise AssertionError("lock helper failed to acquire the requested lock")
+    try:
+        failure, observed_stdout, observed_stderr = _wait_for_lock_helper_ready(
+            process
+        )
+    except BaseException:
+        _terminate_lock_process(process)
+        raise
+    if failure is not None:
+        remaining_stdout, remaining_stderr = _terminate_lock_process(process)
+        raise AssertionError(
+            f"lock helper {failure}; "
+            + _lock_helper_diagnostics(
+                process,
+                observed_stdout + remaining_stdout,
+                observed_stderr + remaining_stderr,
+            )
+        )
     return process
+
+
+def _wait_for_lock_helper_ready(
+    process: subprocess.Popen[str],
+) -> tuple[str | None, str, str]:
+    assert process.stdout is not None
+    assert process.stderr is not None
+    observed_stdout: list[str] = []
+    observed_stderr: list[str] = []
+    pending_stdout: bytes = b""
+    deadline = time.monotonic() + _LOCK_HELPER_STARTUP_TIMEOUT_SECONDS
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+    selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+    try:
+        while True:
+            returncode = process.poll()
+            if returncode is not None:
+                return (
+                    f"exited before readiness with returncode={returncode}",
+                    "".join(observed_stdout),
+                    "".join(observed_stderr),
+                )
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                progress = [
+                    line.rstrip("\n")
+                    for line in observed_stdout
+                    if line.startswith("progress:")
+                ]
+                return (
+                    "readiness timed out after "
+                    f"{_LOCK_HELPER_STARTUP_TIMEOUT_SECONDS:g}s while still running; "
+                    f"last_progress={progress[-1] if progress else 'none'}",
+                    "".join(observed_stdout),
+                    "".join(observed_stderr),
+                )
+            events = selector.select(remaining)
+            if not events:
+                continue
+            for key, _mask in events:
+                if key.data == "stdout":
+                    stdout_chunk: bytes = os.read(process.stdout.fileno(), 4_096)
+                    if stdout_chunk == b"":
+                        try:
+                            returncode = process.wait(
+                                timeout=_LOCK_HELPER_CLEANUP_TIMEOUT_SECONDS
+                            )
+                        except subprocess.TimeoutExpired:
+                            return (
+                                "closed stdout before readiness while still running",
+                                "".join(observed_stdout)
+                                + pending_stdout.decode("utf-8", errors="replace"),
+                                "".join(observed_stderr),
+                            )
+                        return (
+                            f"exited before readiness with returncode={returncode}",
+                            "".join(observed_stdout)
+                            + pending_stdout.decode("utf-8", errors="replace"),
+                            "".join(observed_stderr),
+                        )
+                    pending_stdout = pending_stdout + stdout_chunk
+                    newline_index = pending_stdout.find(b"\n")
+                    while newline_index >= 0:
+                        raw_line: bytes = pending_stdout[:newline_index]
+                        pending_stdout = pending_stdout[newline_index + 1 :]
+                        line = raw_line.decode("utf-8", errors="replace") + "\n"
+                        observed_stdout.append(line)
+                        if line == "locked\n":
+                            return (
+                                None,
+                                "".join(observed_stdout),
+                                "".join(observed_stderr),
+                            )
+                        if not line.startswith("progress:"):
+                            return (
+                                f"sent unexpected readiness output {line.rstrip()!r}",
+                                "".join(observed_stdout),
+                                "".join(observed_stderr),
+                            )
+                        newline_index = pending_stdout.find(b"\n")
+                else:
+                    stderr_chunk: bytes = os.read(process.stderr.fileno(), 4_096)
+                    if stderr_chunk == b"":
+                        selector.unregister(process.stderr)
+                    else:
+                        observed_stderr.append(
+                            stderr_chunk.decode("utf-8", errors="replace")
+                        )
+    finally:
+        selector.close()
+
+
+def _terminate_lock_process(process: subprocess.Popen[str]) -> tuple[str, str]:
+    if process.poll() is None:
+        process.kill()
+    try:
+        return process.communicate(timeout=_LOCK_HELPER_CLEANUP_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        return process.communicate(timeout=_LOCK_HELPER_CLEANUP_TIMEOUT_SECONDS)
+
+
+def _lock_helper_diagnostics(
+    process: subprocess.Popen[str],
+    stdout: str,
+    stderr: str,
+) -> str:
+    return (
+        f"returncode={process.returncode!r}, "
+        f"stdout={_bounded_lock_helper_output(stdout)!r}, "
+        f"stderr={_bounded_lock_helper_output(stderr)!r}"
+    )
+
+
+def _bounded_lock_helper_output(output: str) -> str:
+    if len(output) <= _LOCK_HELPER_DIAGNOSTIC_LIMIT:
+        return output
+    return output[:_LOCK_HELPER_DIAGNOSTIC_LIMIT] + "<truncated>"
 
 
 def _stop_lock_process(process: subprocess.Popen[str]) -> None:
     if process.poll() is not None:
-        raise AssertionError("lock helper exited before release")
+        stdout, stderr = process.communicate(
+            timeout=_LOCK_HELPER_CLEANUP_TIMEOUT_SECONDS
+        )
+        raise AssertionError(
+            "lock helper exited before release; "
+            + _lock_helper_diagnostics(process, stdout, stderr)
+        )
     try:
-        _stdout, stderr = process.communicate(input="\n", timeout=3)
+        stdout, stderr = process.communicate(
+            input="\n",
+            timeout=_LOCK_HELPER_CLEANUP_TIMEOUT_SECONDS,
+        )
     except subprocess.TimeoutExpired:
-        process.kill()
-        process.communicate(timeout=3)
-        raise AssertionError("lock helper release timed out") from None
-    assert process.returncode == 0
-    assert stderr == ""
+        stdout, stderr = _terminate_lock_process(process)
+        raise AssertionError(
+            "lock helper release timed out; "
+            + _lock_helper_diagnostics(process, stdout, stderr)
+        ) from None
+    if process.returncode != 0 or stdout != "" or stderr != "":
+        raise AssertionError(
+            "lock helper release failed; "
+            + _lock_helper_diagnostics(process, stdout, stderr)
+        )
 
 
 def _independent_process_can_lock(lock: Path) -> bool:
