@@ -52,14 +52,21 @@ jobs:
       - name: Install locked dependencies
         run: uv sync --locked --dev
 
-      - name: Focused runtime portability tests
+      - name: Focused runtime and Studio portability tests
         run: >-
           uv run pytest
           tests/unit/simulation/test_preview.py
           tests/unit/runtime/test_history.py
           tests/unit/runtime/test_control.py
+          tests/unit/runtime/test_session_discovery.py
+          tests/unit/studio/test_application.py
+          tests/unit/studio/test_host.py
           tests/unit/test_cli.py
           tests/integration/test_runtime_cli.py
+          tests/integration/test_studio_host.py
+          tests/studio/test_static_shell.py
+          tests/studio/test_host_client.py
+          tests/studio/test_p1_preservation.py
           tests/unit/test_verify_clean_install.py
 
       - name: Clean installed wheel RTO-3 journey
