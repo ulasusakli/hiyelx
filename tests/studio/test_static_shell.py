@@ -38,41 +38,43 @@ def test_static_shell_has_semantic_landmarks_and_labeled_controls() -> None:
     assert parser.tags.count("footer") == 1
     assert parser.tags.count("h1") == 1
     assert "lang=\"en\"" in (STUDIO / "index.html").read_text()
-    assert {"session-select", "fixture-select"}.issubset(set(parser.label_for))
+    assert "session-select" in parser.label_for
     assert set(parser.label_for).issubset(parser.ids)
     assert all(link.startswith("#") for link in parser.links)
 
 
-def test_shell_names_simulation_static_read_only_and_no_live_connection() -> None:
+def test_shell_composes_read_only_host_client_without_fixture_fallback() -> None:
     html = (STUDIO / "index.html").read_text()
     app = (STUDIO / "app.js").read_text()
     fixtures = (STUDIO / "fixtures.js").read_text()
 
     assert "SIMULATION" in html
-    assert "static prototype" in html.lower()
-    assert "No runtime is connected" in html
+    assert "LOCAL · READ ONLY" in html
+    assert "already-running local simulation" in html
     assert '<select id="session-select" disabled' in html
-    assert "<option>Demo · sim_motor</option>" in html
-    assert "No session discovery runs in this prototype." in html
+    assert "Discovering local sessions…" in html
+    assert "static prototype" not in html.lower()
+    assert "Demo · sim_motor" not in html
+    assert 'src="fixtures.js"' not in html
+    assert html.index('src="host-client.js"') < html.index('src="app.js"')
     assert "fetch(" not in app
     assert "XMLHttpRequest" not in app
     assert "WebSocket" not in app
     assert "EventSource" not in app
-    assert '"POST"' not in app and '"PUT"' not in app and '"DELETE"' not in app
-    assert "window.HiyelxStudioFixtures" in app
+    assert all(method not in app for method in ('"POST"', '"PUT"', '"PATCH"', '"DELETE"'))
+    assert "window.HiyelxStudioHostClient" in app
+    assert "window.HiyelxStudioFixtures" not in app
+    assert "refreshSessions()" in app
+    assert "selectSession(" in app
+    assert "controller.start()" in app
     assert "const scenarios = [" in fixtures
     assert "schema_version: \"1\"" in fixtures
-    assert 'fixtureSelect.addEventListener("change"' in app
-    assert "renderScenario(fixtures.getScenario(fixtureSelect.value))" in app
-    assert "function renderScenario(scenario)" in app
-    assert "renderResources(scenario.snapshot)" in app
 
 
-def test_all_contract_states_and_safe_user_facing_values_are_fixture_driven() -> None:
-    fixtures = (STUDIO / "fixtures.js").read_text()
+def test_all_live_controller_phases_have_sanitized_ui_states() -> None:
+    app = (STUDIO / "app.js").read_text()
     expected = {
-        "starting",
-        "no_session",
+        "idle",
         "connecting",
         "fresh",
         "unchanged",
@@ -82,17 +84,20 @@ def test_all_contract_states_and_safe_user_facing_values_are_fixture_driven() ->
         "unsupported",
         "error",
         "disconnected",
+        "paused",
+        "disposed",
     }
-    assert all(f'id: "{state}"' in fixtures for state in expected)
+    assert all(f"{state}: [" in app for state in expected)
     for text in (
         "angular_position_radians",
         "angular_velocity_radians_per_second",
         "simulation_time_seconds",
         "revision",
         "health_summary",
-        "sim_motor",
     ):
-        assert text in fixtures
+        assert text in app
+    for private in ("error.message", "location.href", "location.origin", "launch_url"):
+        assert private not in app
 
 
 def test_responsive_accessibility_and_stable_refresh_requirements_are_present() -> None:
@@ -119,6 +124,14 @@ def test_fixture_formatter_is_finite_and_uses_fixed_precision() -> None:
     assert "Number.isFinite(value)" in fixtures
     assert "value.toFixed(digits)" in fixtures
     assert 'return "—"' in fixtures
+
+
+def test_live_formatter_is_finite_and_uses_fixed_precision() -> None:
+    app = (STUDIO / "app.js").read_text()
+
+    assert "Number.isFinite(value)" in app
+    assert "value.toFixed(digits)" in app
+    assert 'return "—"' in app
 
 
 def test_unknown_fixture_uses_sanitized_error_fallback() -> None:
@@ -238,20 +251,16 @@ process.stdout.write(JSON.stringify({
     }, failure
 
 
-def test_initial_fixture_selector_and_render_share_fresh_selection() -> None:
-    app = (STUDIO / "app.js").read_text()
-
-    assert 'option.selected = scenario.id === "fresh"' in app
-    assert 'renderScenario(fixtures.getScenario(fixtureSelect.value))' in app
-    assert 'renderScenario(fixtures.getScenario("fresh"))' not in app
-
-
-def test_session_fixture_label_is_short_and_still_explained_as_static() -> None:
+def test_initial_shell_is_fail_closed_before_live_discovery() -> None:
     html = (STUDIO / "index.html").read_text()
 
-    assert "<option>Demo · sim_motor</option>" in html
-    assert "Session selection is not connected in P1" not in html
-    assert "No session discovery runs in this prototype." in html
+    assert '<body data-phase="starting">' in html
+    assert '<strong id="runtime-state">—</strong>' in html
+    assert '<strong id="resource-count">0</strong>' in html
+    assert '<strong id="snapshot-state">Loading</strong>' in html
+    assert "Studio Lite is starting." in html
+    assert "Demo · sim_motor" not in html
+    assert "Fixture preview" not in html
     assert '<select id="session-select" disabled' in html
     assert '<label for="session-select">Session</label>' in html
 

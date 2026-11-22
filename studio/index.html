@@ -4,13 +4,13 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light" />
-    <title>HIYELX Studio Lite — Static shell</title>
+    <title>HIYELX Studio Lite — Live observation</title>
     <link rel="icon" href="data:," />
     <link rel="stylesheet" href="studio.css" />
-    <script src="fixtures.js" defer></script>
+    <script src="host-client.js" defer></script>
     <script src="app.js" defer></script>
   </head>
-  <body>
+  <body data-phase="starting">
     <div class="app-shell">
       <header class="app-header">
         <a class="brand" href="#main" aria-label="HIYELX Studio Lite home">
@@ -21,7 +21,7 @@
           <span class="simulation-badge"><span aria-hidden="true">●</span> SIMULATION</span>
           <span class="connection-badge" id="connection-badge" data-severity="neutral">
             <span class="status-dot" aria-hidden="true"></span>
-            <span id="connection-label">Fixture preview</span>
+            <span id="connection-label">Starting</span>
           </span>
         </div>
       </header>
@@ -31,9 +31,9 @@
           <div>
             <p class="eyebrow">OBSERVATION · LOCAL · READ ONLY</p>
             <h1 id="page-title">Simulation overview</h1>
-            <p class="intro-copy">A clear view of a simulation snapshot. This static prototype uses fixture data and is not connected to a runtime.</p>
+            <p class="intro-copy">Observe validated snapshots from an already-running local simulation through a read-only Studio connection.</p>
           </div>
-          <span class="prototype-tag">STATIC PROTOTYPE</span>
+          <span class="prototype-tag">READ ONLY</span>
         </section>
 
         <section class="session-panel panel" aria-labelledby="session-heading">
@@ -42,43 +42,43 @@
               <p class="eyebrow">SESSION</p>
               <h2 id="session-heading">Local session</h2>
             </div>
-            <span class="state-pill" id="state-pill" data-severity="neutral">Fixture preview</span>
+            <span class="state-pill" id="state-pill" data-severity="neutral">Starting</span>
           </div>
           <div class="session-controls">
             <div class="field-group">
               <label for="session-select">Session</label>
               <select id="session-select" disabled aria-describedby="session-help">
-                <option>Demo · sim_motor</option>
+                <option value="">Discovering local sessions…</option>
               </select>
-              <p class="field-help" id="session-help">A future local host will provide observable sessions. No session discovery runs in this prototype.</p>
+              <p class="field-help" id="session-help">Observable sessions are discovered through the local read-only Studio Host.</p>
             </div>
             <div class="refresh-info">
               <span class="field-label">Snapshot freshness</span>
-              <span class="refresh-value" id="freshness">Fixture — no live refresh</span>
-              <span class="field-help">No polling or network requests in this static shell.</span>
+              <span class="refresh-value" id="freshness">Starting…</span>
+              <span class="field-help">Observation updates pause while this tab is in the background.</span>
             </div>
           </div>
           <div class="state-message" id="state-message" data-severity="neutral" role="status" aria-live="polite" aria-atomic="true">
             <span class="message-icon" aria-hidden="true">i</span>
-            <span id="state-message-text">Fixture preview only. No runtime is connected.</span>
+            <span id="state-message-text">Studio Lite is starting.</span>
           </div>
         </section>
 
         <section class="runtime-grid" aria-label="Runtime summary">
           <article class="summary-card panel">
             <span class="field-label">Runtime state</span>
-            <strong id="runtime-state">running</strong>
+            <strong id="runtime-state">—</strong>
             <span class="summary-note">Manager snapshot state</span>
           </article>
           <article class="summary-card panel">
             <span class="field-label">Resources</span>
-            <strong id="resource-count">1</strong>
+            <strong id="resource-count">0</strong>
             <span class="summary-note">Observable resources</span>
           </article>
           <article class="summary-card panel">
             <span class="field-label">Snapshot</span>
-            <strong id="snapshot-state">Ready</strong>
-            <span class="summary-note">Fixture state, not live status</span>
+            <strong id="snapshot-state">Loading</strong>
+            <span class="summary-note">Validated schema-v1 observation</span>
           </article>
         </section>
 
@@ -88,7 +88,7 @@
               <p class="eyebrow">ORDERED PREVIEW RESOURCES</p>
               <h2 id="resources-heading">Resources</h2>
             </div>
-            <span class="field-help">Order follows the preview schema fixture.</span>
+            <span class="field-help">Order follows the validated schema-v1 response.</span>
           </div>
           <div class="resource-grid" id="resource-grid" aria-live="off"></div>
           <div class="empty-panel panel" id="empty-state" hidden>
@@ -98,12 +98,6 @@
           </div>
         </section>
 
-        <details class="fixture-tools panel">
-          <summary>Preview interface states (local fixtures only)</summary>
-          <p>These controls switch static example data so the P1 screen states can be inspected. They do not contact or change HIYELX.</p>
-          <label for="fixture-select">Fixture state</label>
-          <select id="fixture-select"></select>
-        </details>
       </main>
 
       <footer class="app-footer">
@@ -114,7 +108,7 @@
     <div class="viewport-fallback" role="status">
       <span class="simulation-badge"><span aria-hidden="true">●</span> SIMULATION</span>
       <h2>Wider view required</h2>
-      <p>This prototype is designed for viewports at least 320 CSS pixels wide. Increase the window width to inspect the dashboard.</p>
+      <p>This dashboard is designed for viewports at least 320 CSS pixels wide. Increase the window width to inspect the observation.</p>
     </div>
   </body>
 </html>
