@@ -13,9 +13,11 @@ from dataclasses import dataclass
 from math import isfinite
 from typing import final
 
+from hiyelx.core import Component, ComponentCapability, ComponentCategory
 from hiyelx.resources import (
+    DEFAULT_OPERATION_DEADLINES,
     LifecycleState,
-    Resource,
+    OperationDeadlinePolicy,
     ResourceIdentity,
     ResourceOperation,
 )
@@ -98,8 +100,30 @@ class MotorState:
                 raise InvalidMotorStateError(field, value)
 
 
-class Motor(Resource, ABC):
+class Motor(Component, ABC):
     """Application-level motor abstraction with lifecycle-guarded commands."""
+
+    def __init__(
+        self,
+        identity: ResourceIdentity,
+        *,
+        deadline_policy: OperationDeadlinePolicy = DEFAULT_OPERATION_DEADLINES,
+    ) -> None:
+        super().__init__(
+            identity,
+            category=ComponentCategory.ACTUATOR,
+            capabilities=(
+                ComponentCapability.CAN_SET_VELOCITY,
+                ComponentCapability.HAS_ANGULAR_POSITION,
+                ComponentCapability.HAS_ANGULAR_VELOCITY,
+            ),
+            deadline_policy=deadline_policy,
+        )
+
+    async def safe_stop(self) -> None:
+        """Command zero velocity if RUNNING."""
+        if self.state is LifecycleState.RUNNING:
+            await self.stop()
 
     @final
     async def apply_command(self, command: MotorCommand) -> None:
