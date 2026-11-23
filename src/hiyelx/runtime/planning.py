@@ -4,7 +4,8 @@ from collections import Counter
 from collections.abc import Mapping
 from heapq import heappop, heappush
 
-from hiyelx.config import ResourceDefinition, RuntimeConfig
+from hiyelx.config import RuntimeConfig
+from hiyelx.config.v2 import RobotConfig
 from hiyelx.resources import ResourceIdentity
 from hiyelx.runtime.errors import (
     DependencyCycleError,
@@ -14,13 +15,20 @@ from hiyelx.runtime.errors import (
 )
 
 
-def plan_startup(config: RuntimeConfig) -> tuple[ResourceIdentity, ...]:
+def plan_startup(config: RuntimeConfig | RobotConfig) -> tuple[ResourceIdentity, ...]:
     """Return the lexicographically smallest valid topological order."""
-    definitions = {definition.identity: definition for definition in config.resources}
-    identities = frozenset(definitions)
+    if isinstance(config, RobotConfig):
+        dependencies_by_identity: dict[ResourceIdentity, tuple[ResourceIdentity, ...]] = {
+            component.id: component.depends_on for component in config.components
+        }
+    else:
+        dependencies_by_identity = {
+            definition.identity: definition.depends_on for definition in config.resources
+        }
+    identities = frozenset(dependencies_by_identity)
 
     for identity in sorted(identities, key=_identity_value):
-        dependencies = definitions[identity].depends_on
+        dependencies = dependencies_by_identity[identity]
         counts = Counter(dependencies)
         duplicates = sorted(
             (dependency for dependency, count in counts.items() if count > 1),
@@ -38,14 +46,14 @@ def plan_startup(config: RuntimeConfig) -> tuple[ResourceIdentity, ...]:
             raise MissingDependencyError(identity, missing[0])
 
     indegree = {
-        identity: len(definition.depends_on)
-        for identity, definition in definitions.items()
+        identity: len(dependencies_by_identity[identity])
+        for identity in identities
     }
     dependents: dict[ResourceIdentity, set[ResourceIdentity]] = {
         identity: set() for identity in identities
     }
-    for identity, definition in definitions.items():
-        for dependency in definition.depends_on:
+    for identity, deps in dependencies_by_identity.items():
+        for dependency in deps:
             dependents[dependency].add(identity)
 
     available: list[tuple[str, ResourceIdentity]] = []
@@ -62,11 +70,11 @@ def plan_startup(config: RuntimeConfig) -> tuple[ResourceIdentity, ...]:
             if indegree[dependent] == 0:
                 heappush(available, (dependent.value, dependent))
 
-    if len(plan) != len(definitions):
+    if len(plan) != len(dependencies_by_identity):
         unresolved = frozenset(
             identity for identity, count in indegree.items() if count > 0
         )
-        raise DependencyCycleError(_find_cycle(definitions, unresolved))
+        raise DependencyCycleError(_find_cycle(dependencies_by_identity, unresolved))
 
     return tuple(plan)
 
@@ -76,7 +84,7 @@ def _identity_value(identity: ResourceIdentity) -> str:
 
 
 def _find_cycle(
-    definitions: Mapping[ResourceIdentity, ResourceDefinition],
+    dependencies_by_identity: Mapping[ResourceIdentity, tuple[ResourceIdentity, ...]],
     unresolved: frozenset[ResourceIdentity],
 ) -> tuple[ResourceIdentity, ...]:
     visited: set[ResourceIdentity] = set()
@@ -93,7 +101,7 @@ def _find_cycle(
         active_positions[identity] = len(path)
         path.append(identity)
         for dependency in sorted(
-            definitions[identity].depends_on,
+            dependencies_by_identity[identity],
             key=_identity_value,
         ):
             if dependency not in unresolved:

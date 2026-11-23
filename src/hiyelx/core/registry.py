@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import cast
+from typing import TYPE_CHECKING, Any, cast
 
-from hiyelx.config.v2.models import ComponentDefinition
+if TYPE_CHECKING:
+    from hiyelx.config.v2.models import ComponentDefinition
 from hiyelx.core.capabilities import ComponentCapability
 from hiyelx.core.component import Component
 from hiyelx.core.errors import (
@@ -18,7 +19,7 @@ from hiyelx.core.errors import (
 )
 from hiyelx.core.types import ComponentCategory
 
-ComponentFactory = Callable[[ComponentDefinition], Component]
+ComponentFactory = Callable[[Any], Component]
 
 
 @dataclass(frozen=True, slots=True)
