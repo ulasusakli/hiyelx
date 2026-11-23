@@ -18,7 +18,10 @@ from hiyelx.acceptance import (
     load_hardware_acceptance_config,
     preflight_hardware_acceptance,
 )
+from hiyelx.components.mock import register_mock_components
 from hiyelx.config import ConfigurationError, RuntimeConfig, load_config
+from hiyelx.config.v2 import RobotConfig, load_robot_config
+from hiyelx.core import ComponentRegistry
 from hiyelx.drivers.dynamixel import register_dynamixel_xl430_motor
 from hiyelx.models import ModelRegistry
 from hiyelx.resources import ResourceIdentity
@@ -92,6 +95,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if arguments.command == "validate-config":
         return _validate_config(arguments.path)
+    if arguments.command == "run":
+        return _run_robot(arguments.path, duration=arguments.duration)
     if arguments.command == "demo" and arguments.demo == "sim-motor":
         try:
             transcript = asyncio.run(run_sim_motor_demo())
@@ -153,6 +158,18 @@ def _parser() -> argparse.ArgumentParser:
         help="validate a local HIYELX configuration",
     )
     validate.add_argument("path", type=Path)
+
+    run_cmd = commands.add_parser(
+        "run",
+        help="run a robot configuration in the local runtime",
+    )
+    run_cmd.add_argument("path", type=Path)
+    run_cmd.add_argument(
+        "--duration",
+        type=float,
+        default=0.0,
+        help="duration in seconds to run before shutting down (default: 0.0)",
+    )
 
     demo = commands.add_parser("demo", help="run a deterministic local demo")
     demos = demo.add_subparsers(dest="demo")
@@ -660,9 +677,65 @@ def _validate_config(path: Path) -> int:
     try:
         load_config(path)
     except ConfigurationError:
-        print("error: configuration is invalid", file=sys.stderr)
-        return FAILURE
+        try:
+            load_robot_config(path)
+        except ConfigurationError:
+            print("error: configuration is invalid", file=sys.stderr)
+            return FAILURE
     print("configuration=valid")
+    return SUCCESS
+
+
+def _run_robot(path: Path, *, duration: float = 0.0) -> int:
+    try:
+        return asyncio.run(_async_run_robot(path, duration=duration))
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        print("runtime=interrupted", flush=True)
+        return SUCCESS
+    except Exception as error:
+        print(f"error: runtime execution failed: {error}", file=sys.stderr)
+        return FAILURE
+
+
+async def _async_run_robot(path: Path, *, duration: float = 0.0) -> int:
+    config: RuntimeConfig | RobotConfig
+    registry: ModelRegistry | ComponentRegistry
+
+    try:
+        config = load_robot_config(path)
+        registry = ComponentRegistry()
+        register_mock_components(registry)
+        is_v2 = True
+    except ConfigurationError:
+        try:
+            config = load_config(path)
+            registry = ModelRegistry()
+            register_simulated_motor(registry)
+            is_v2 = False
+        except ConfigurationError:
+            print("error: configuration is invalid", file=sys.stderr)
+            return FAILURE
+
+    manager = RuntimeManager(config, registry)
+    order = manager.startup_plan
+
+    if is_v2 and isinstance(config, RobotConfig):
+        print(f"robot=running id={config.robot.id} name={config.robot.name}", flush=True)
+        print(f"components={','.join(identity.value for identity in order)}", flush=True)
+    else:
+        print("runtime=running", flush=True)
+        print(f"resources={','.join(identity.value for identity in order)}", flush=True)
+
+    try:
+        await manager.start()
+        print("startup=succeeded", flush=True)
+        if duration > 0.0:
+            await asyncio.sleep(duration)
+    finally:
+        await manager.safe_stop()
+        await manager.shutdown()
+        print("shutdown=succeeded", flush=True)
+
     return SUCCESS
 
 

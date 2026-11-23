@@ -2,9 +2,12 @@
 
 from collections.abc import Mapping
 from types import MappingProxyType
+from typing import Any
 
 from hiyelx.components import Motor
 from hiyelx.config import RuntimeConfig
+from hiyelx.config.v2 import RobotConfig
+from hiyelx.core import Component, ComponentCategory, ComponentRegistry
 from hiyelx.models import ModelRegistry
 from hiyelx.resources import (
     HealthStatus,
@@ -42,14 +45,19 @@ class RuntimeManager:
 
     def __init__(
         self,
-        config: RuntimeConfig,
-        registry: ModelRegistry,
+        config: RuntimeConfig | RobotConfig,
+        registry: ModelRegistry | ComponentRegistry,
         *,
         event_sink: RuntimeEventSink | None = None,
     ) -> None:
         self._state = RuntimeManagerState.NEW
         self._startup_plan = plan_startup(config)
-        definitions = {definition.identity: definition for definition in config.resources}
+        if isinstance(config, RobotConfig):
+            definitions: Mapping[ResourceIdentity, Any] = {
+                component.id: component for component in config.components
+            }
+        else:
+            definitions = {definition.identity: definition for definition in config.resources}
         resources: dict[ResourceIdentity, Resource] = {}
 
         for identity in self._startup_plan:
@@ -235,7 +243,14 @@ class RuntimeManager:
             outcomes: list[SafeStopOutcome] = []
             for identity in reversed(self._successful_start_order):
                 resource = self._resources[identity]
-                if not isinstance(resource, Motor) or resource.state is not LifecycleState.RUNNING:
+                if resource.state is not LifecycleState.RUNNING:
+                    continue
+                is_motor = isinstance(resource, Motor)
+                is_actuator = (
+                    isinstance(resource, Component)
+                    and resource.category is ComponentCategory.ACTUATOR
+                )
+                if not (is_motor or is_actuator):
                     continue
                 self._emit_resource(
                     resource,
@@ -244,7 +259,10 @@ class RuntimeManager:
                     summary="motor safe-stop attempted",
                 )
                 try:
-                    await resource.stop()
+                    if isinstance(resource, Motor):
+                        await resource.stop()
+                    elif isinstance(resource, Component):
+                        await resource.safe_stop()
                 except Exception as error:
                     resource.record_fault(
                         ResourceFaultKind.SAFE_STOP,
