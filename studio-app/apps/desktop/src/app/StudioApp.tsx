@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { Code2, Command, GitCompare, Network, Save } from "lucide-react";
+import { Code2, Command, GitCompare, Network, Package, Save } from "lucide-react";
 import {
   patchRobotConfigYamlRoundTrip,
   validateRobotConfigYaml,
@@ -17,6 +17,10 @@ import {
   type StudioNodeKind,
 } from "@hiyelx/graph-engine";
 import {
+  BUILTIN_MANIFEST_CATALOG,
+  type ComponentManifest,
+} from "@hiyelx/manifest-engine";
+import {
   createStarterProjectSnapshot,
   type CanvasLayoutDocument,
   type ProjectManifest,
@@ -25,6 +29,7 @@ import {
 import { StatusBadge } from "@hiyelx/ui";
 import { ConfigEditorView } from "../../../../features/configuration/ConfigEditorView.tsx";
 import { DiffPanel } from "../../../../features/configuration/DiffPanel.tsx";
+import { ComponentExplorerView } from "../../../../features/explorer/ComponentExplorerView.tsx";
 import { ProjectSidebar } from "../../../../features/projects/ProjectSidebar.tsx";
 import { RobotBuilderCanvas } from "../../../../features/robot-builder/RobotBuilderCanvas.tsx";
 import { CommandPalette, type PaletteCommand } from "../../../../features/shell/CommandPalette.tsx";
@@ -143,6 +148,17 @@ function StudioWorkbench() {
     });
   }
 
+  function handleAddFromManifest(manifestItem: ComponentManifest) {
+    handleAddComponent({
+      model: manifestItem.model,
+      label: manifestItem.name,
+      category: manifestItem.category,
+      defaultSettings: manifestItem.configuration.defaults,
+      capabilities: manifestItem.capabilities,
+    });
+    setActiveView("builder");
+  }
+
   function handleDeleteSelectedNode() {
     if (!selectedNodeId || !validation.ok) return;
     const targetNode = graph.nodes.find((n) => n.id === selectedNodeId);
@@ -230,6 +246,12 @@ function StudioWorkbench() {
       onRun: () => setActiveView("builder"),
     },
     {
+      id: "view-explorer",
+      label: "Switch to Component & Driver Explorer (M04)",
+      group: "Navigation",
+      onRun: () => setActiveView("explorer"),
+    },
+    {
       id: "view-config",
       label: "Switch to Configuration Editor (M05)",
       group: "Navigation",
@@ -265,6 +287,7 @@ function StudioWorkbench() {
 
   const navItems: readonly { id: StudioViewId; label: string; icon: typeof Network }[] = [
     { id: "builder", label: "Robot Builder", icon: Network },
+    { id: "explorer", label: "Components", icon: Package },
     { id: "config", label: "Config & YAML", icon: Code2 },
     { id: "diff", label: "Diff", icon: GitCompare },
   ];
@@ -349,6 +372,15 @@ function StudioWorkbench() {
               onAutoLayout={() => {
                 void handleAutoLayout();
               }}
+            />
+          )}
+
+          {activeView === "explorer" && (
+            <ComponentExplorerView
+              catalog={BUILTIN_MANIFEST_CATALOG}
+              runtimeVersion={manifest.runtime.min_version}
+              canAddToRobot={validation.ok}
+              onAddManifestComponent={handleAddFromManifest}
             />
           )}
 

@@ -11,6 +11,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@hiyelx/project-engine": path.resolve(rootDir, "packages/project-engine/src/index.ts"),
+      "@hiyelx/manifest-engine": path.resolve(rootDir, "packages/manifest-engine/src/index.ts"),
       "@hiyelx/graph-engine": path.resolve(rootDir, "packages/graph-engine/src/index.ts"),
       "@hiyelx/config-engine": path.resolve(rootDir, "packages/config-engine/src/index.ts"),
       "@hiyelx/code-editor": path.resolve(rootDir, "packages/code-editor/src/index.ts"),

@@ -61,4 +61,22 @@ describe("P4.3–P4.5 Studio RDE Workbench", () => {
     fireEvent.click(screen.getByRole("button", { name: /Switch to Configuration Editor/ }));
     expect(screen.getByLabelText("robot.yaml editor")).toBeInTheDocument();
   });
+
+  it("filters manifests in Component Explorer (M04) and adds a component into Robot Builder & robot.yaml", () => {
+    render(<StudioApp />);
+    fireEvent.click(screen.getByRole("button", { name: "Components" }));
+
+    expect(screen.getByLabelText("Component and Driver Explorer")).toBeInTheDocument();
+    const capSelect = screen.getByLabelText("Filter by capability");
+    fireEvent.change(capSelect, { target: { value: "can_stream_frames" } });
+    expect(screen.getByText("mock.camera")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add to Robot Builder" }));
+    expect(screen.getByLabelText("Visual Robot Builder")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save robot.yaml" })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Config & YAML" }));
+    const editor = screen.getByLabelText("robot.yaml editor") as HTMLTextAreaElement;
+    expect(editor.value).toContain("mock_camera_1");
+  });
 });

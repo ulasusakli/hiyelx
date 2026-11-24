@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type { StudioEdgeKind } from "@hiyelx/graph-engine";
 
-export type StudioViewId = "builder" | "config" | "diff";
+export type StudioViewId = "builder" | "explorer" | "config" | "diff";
 
 /**
  * Transient UI state ONLY (ADR 0002 v1.1 Decision 6).

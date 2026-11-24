@@ -20,6 +20,7 @@
     "baseUrl": ".",
     "paths": {
       "@hiyelx/project-engine": ["packages/project-engine/src/index.ts"],
+      "@hiyelx/manifest-engine": ["packages/manifest-engine/src/index.ts"],
       "@hiyelx/graph-engine": ["packages/graph-engine/src/index.ts"],
       "@hiyelx/config-engine": ["packages/config-engine/src/index.ts"],
       "@hiyelx/code-editor": ["packages/code-editor/src/index.ts"],
