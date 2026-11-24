@@ -125,6 +125,58 @@
     });
   }
 
+  function validateRuntimeInfo(value) {
+    if (!hasExactKeys(value, [
+      "package_version",
+      "registered_models",
+      "schema_version",
+      "supported_config_schemas",
+    ])) {
+      throw new StudioClientError("invalid_response");
+    }
+    if (value.schema_version !== "1") {
+      throw new StudioClientError("schema_unsupported");
+    }
+    if (typeof value.package_version !== "string"
+      || value.package_version.trim().length === 0
+      || !Array.isArray(value.supported_config_schemas)
+      || value.supported_config_schemas.length === 0
+      || value.supported_config_schemas.some(
+        (item) => typeof item !== "string" || item.trim().length === 0,
+      )
+      || !Array.isArray(value.registered_models)
+      || value.registered_models.length > 64) {
+      throw new StudioClientError("invalid_response");
+    }
+    const seen = new Set();
+    const models = value.registered_models.map((item) => {
+      if (!hasExactKeys(item, ["capabilities", "category", "model"])
+        || typeof item.model !== "string"
+        || item.model.trim().length === 0
+        || seen.has(item.model)
+        || typeof item.category !== "string"
+        || item.category.trim().length === 0
+        || !Array.isArray(item.capabilities)
+        || item.capabilities.some(
+          (cap) => typeof cap !== "string" || cap.trim().length === 0,
+        )) {
+        throw new StudioClientError("invalid_response");
+      }
+      seen.add(item.model);
+      return {
+        capabilities: [...item.capabilities],
+        category: item.category,
+        model: item.model,
+      };
+    });
+    return freezeDeep({
+      package_version: value.package_version,
+      registered_models: models,
+      schema_version: value.schema_version,
+      supported_config_schemas: [...value.supported_config_schemas],
+    });
+  }
+
   function validateSessions(value) {
     if (!hasExactKeys(value, ["schema_version", "sessions"])) {
       throw new StudioClientError("invalid_response");
@@ -502,6 +554,10 @@
       return auxiliary("/api/v1/meta", validateMetadata);
     }
 
+    async function fetchRuntimeInfo() {
+      return auxiliary("/api/v1/runtime/info", validateRuntimeInfo);
+    }
+
     async function refreshSessions() {
       const result = await auxiliary("/api/v1/sessions", validateSessions);
       if (disposed) throw new StudioClientError("disposed");
@@ -612,6 +668,7 @@
     const controller = {
       dispose,
       fetchMetadata,
+      fetchRuntimeInfo,
       getState: state,
       pause,
       refreshSessions,

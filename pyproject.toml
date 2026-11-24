@@ -40,6 +40,8 @@ packages = ["src/hiyelx"]
 "studio/fixtures.js" = "hiyelx/studio/assets/fixtures.js"
 "studio/app.js" = "hiyelx/studio/assets/app.js"
 "studio/host-client.js" = "hiyelx/studio/assets/host-client.js"
+"studio/live.html" = "hiyelx/studio/assets/live.html"
+"studio/live-app.js" = "hiyelx/studio/assets/live-app.js"
 
 [tool.ruff]
 target-version = "py312"

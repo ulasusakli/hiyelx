@@ -22,6 +22,8 @@ STUDIO_ASSET_NAMES = (
     "fixtures.js",
     "app.js",
     "host-client.js",
+    "live.html",
+    "live-app.js",
 )
 
 BrowserOpener = Callable[[str], bool]

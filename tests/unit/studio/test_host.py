@@ -70,6 +70,8 @@ async def test_authorized_get_and_head_routes_are_exact_and_canonical(
             ("/fixtures.js", "fixtures.js", "text/javascript; charset=utf-8"),
             ("/app.js", "app.js", "text/javascript; charset=utf-8"),
             ("/host-client.js", "host-client.js", "text/javascript; charset=utf-8"),
+            ("/live", "live.html", "text/html; charset=utf-8"),
+            ("/live-app.js", "live-app.js", "text/javascript; charset=utf-8"),
         ):
             response = await _exchange(host, _request(host, route))
             assert response.status == 200
@@ -88,6 +90,34 @@ async def test_authorized_get_and_head_routes_are_exact_and_canonical(
             "ready": True,
             "schema_version": "1",
         }
+        runtime_info = await _api(host, "/api/v1/runtime/info", token)
+        runtime_info_doc = json.loads(runtime_info.body)
+        assert set(runtime_info_doc) == {
+            "package_version",
+            "registered_models",
+            "schema_version",
+            "supported_config_schemas",
+        }
+        assert runtime_info_doc["schema_version"] == "1"
+        assert runtime_info_doc["package_version"] == "0.2.0a1"
+        assert runtime_info_doc["supported_config_schemas"] == ["1", "2"]
+        assert any(
+            item["model"] == "mock.motor" for item in runtime_info_doc["registered_models"]
+        )
+        runtime_info_head = await _api(
+            host,
+            "/api/v1/runtime/info",
+            token,
+            method="HEAD",
+        )
+        assert runtime_info_head.status == 200
+        assert runtime_info_head.body == b""
+        assert int(runtime_info_head.headers["content-length"]) == len(runtime_info.body)
+
+        no_cap = await _exchange(host, _request(host, "/api/v1/runtime/info"))
+        assert no_cap.status == 403
+        assert json.loads(no_cap.body)["error"]["code"] == "request_rejected"
+
         sessions = await _api(host, "/api/v1/sessions", token)
         assert sessions.body == b'{"schema_version":"1","sessions":["alpha"]}'
         preview = await _api(host, "/api/v1/sessions/alpha/preview", token)
@@ -114,6 +144,7 @@ async def test_capability_is_256_bit_fragment_only_and_required_for_api(
     await host.start()
     try:
         split = urlsplit(host.launch_url)
+        assert split.path == "/live"
         assert split.query == ""
         assert split.fragment.startswith("capability=")
         token = _capability(host)
@@ -729,6 +760,8 @@ def asset_root(tmp_path: Path) -> Path:
         "fixtures.js": "window.fixtures = [];",
         "app.js": "window.app = {};",
         "host-client.js": "void 0;",
+        "live.html": "<!doctype html><title>Studio Live</title>",
+        "live-app.js": "void 0;",
     }
     for name, content in assets.items():
         path = root / name

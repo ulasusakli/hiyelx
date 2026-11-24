@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from hiyelx import __version__
+from hiyelx.components.mock import register_mock_components
+from hiyelx.core.registry import ComponentRegistry
 from hiyelx.runtime.control import (
     InvalidSessionIdError,
     RuntimeControlError,
@@ -17,6 +21,28 @@ from hiyelx.runtime.control import (
     validate_session_id,
 )
 from hiyelx.simulation import SimulationPreviewSnapshot
+
+STUDIO_RUNTIME_INFO_SCHEMA_VERSION = "1"
+SUPPORTED_CONFIG_SCHEMA_VERSIONS: tuple[str, ...] = ("1", "2")
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeModelSummary:
+    """One sanitized built-in component model entry exposed to Studio."""
+
+    model: str
+    category: str
+    capabilities: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class StudioRuntimeInfo:
+    """Sanitized read-only summary of installed Runtime package and models."""
+
+    schema_version: str
+    package_version: str
+    supported_config_schemas: tuple[str, ...]
+    registered_models: tuple[RuntimeModelSummary, ...]
 
 
 class StudioErrorCode(StrEnum):
@@ -95,3 +121,24 @@ async def get_preview(
         return reply.preview
 
     raise StudioApplicationError(failure)
+
+
+async def get_runtime_info() -> StudioRuntimeInfo:
+    """Return a sanitized read-only summary of installed Runtime capabilities."""
+    registry = ComponentRegistry()
+    register_mock_components(registry)
+    models = tuple(
+        RuntimeModelSummary(
+            model=model_name,
+            category=str(entry.category),
+            capabilities=tuple(sorted(str(cap) for cap in entry.capabilities)),
+        )
+        for model_name in registry.registered_models()
+        for entry in (registry.resolve(model_name),)
+    )
+    return StudioRuntimeInfo(
+        schema_version=STUDIO_RUNTIME_INFO_SCHEMA_VERSION,
+        package_version=__version__,
+        supported_config_schemas=SUPPORTED_CONFIG_SCHEMA_VERSIONS,
+        registered_models=models,
+    )

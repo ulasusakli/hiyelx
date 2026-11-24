@@ -305,6 +305,52 @@ const cases = {
     }
   },
 
+  async runtime_info_schema() {
+    const valid = {
+      package_version: "0.2.0a1",
+      registered_models: [
+        {
+          capabilities: ["can_set_velocity"],
+          category: "actuator",
+          model: "mock.motor",
+        },
+      ],
+      schema_version: "1",
+      supported_config_schemas: ["1", "2"],
+    };
+    const okTransport = new Transport();
+    okTransport.enqueue(valid, 200, "/api/v1/runtime/info");
+    const okHarness = make(okTransport);
+    const fetched = await okHarness.controller.fetchRuntimeInfo();
+    assert.deepEqual(JSON.parse(JSON.stringify(fetched)), valid);
+    assert.equal(okTransport.calls[0].path, "/api/v1/runtime/info");
+    assert.equal(okTransport.calls[0].options.headers["X-HIYELX-Studio-Capability"], CAPABILITY);
+    okHarness.controller.dispose();
+
+    const invalid = [
+      {...valid, extra: true},
+      {...valid, schema_version: "2"},
+      {...valid, supported_config_schemas: []},
+      {
+        ...valid,
+        registered_models: [
+          {capabilities: ["can_set_velocity"], category: "actuator", model: "mock.motor"},
+          {capabilities: ["can_set_velocity"], category: "actuator", model: "mock.motor"},
+        ],
+      },
+    ];
+    for (const document of invalid) {
+      const transport = new Transport();
+      transport.enqueue(document, 200, "/api/v1/runtime/info");
+      const harness = make(transport);
+      await rejectsCode(
+        harness.controller.fetchRuntimeInfo(),
+        document.schema_version === "2" ? "schema_unsupported" : "invalid_response",
+      );
+      harness.controller.dispose();
+    }
+  },
+
   async session_schema() {
     const invalid = [
       {sessions: ["alpha"]},
@@ -573,6 +619,7 @@ const cases = {
         "capability",
         "transport",
         "metadata_schema",
+        "runtime_info_schema",
         "session_schema",
         "preview_schema",
         "non_finite",
@@ -619,6 +666,7 @@ def test_controller_has_no_dom_persistence_or_mutation_transport() -> None:
     assert "X-HIYELX-Studio-Capability" in source
     assert re.findall(r'"(/api/v1/[^"`]*)"', source) == [
         "/api/v1/meta",
+        "/api/v1/runtime/info",
         "/api/v1/sessions",
     ]
 

@@ -17,9 +17,12 @@ from typing import cast
 from hiyelx import __version__
 from hiyelx.simulation import SimulationPreviewSnapshot, render_simulation_preview_json
 from hiyelx.studio.application import (
+    RuntimeModelSummary,
     StudioApplicationError,
     StudioErrorCode,
+    StudioRuntimeInfo,
     get_preview,
+    get_runtime_info,
     list_sessions,
 )
 
@@ -47,6 +50,8 @@ _STATIC_ROUTES: Mapping[str, tuple[str, str]] = {
     "/fixtures.js": ("fixtures.js", "text/javascript; charset=utf-8"),
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
     "/host-client.js": ("host-client.js", "text/javascript; charset=utf-8"),
+    "/live": ("live.html", "text/html; charset=utf-8"),
+    "/live-app.js": ("live-app.js", "text/javascript; charset=utf-8"),
 }
 _STATUS_REASONS = {
     200: "OK",
@@ -105,6 +110,7 @@ _SECURITY_HEADERS = (
 
 SessionLister = Callable[[], Awaitable[tuple[str, ...]]]
 PreviewReader = Callable[[str], Awaitable[SimulationPreviewSnapshot]]
+RuntimeInfoReader = Callable[[], Awaitable[StudioRuntimeInfo]]
 
 
 class StudioHostError(Exception):
@@ -165,10 +171,14 @@ class StudioHost:
         *,
         list_sessions_fn: SessionLister | None = None,
         get_preview_fn: PreviewReader | None = None,
+        get_runtime_info_fn: RuntimeInfoReader | None = None,
     ) -> None:
         self._asset_root = _validate_asset_root(asset_root)
         self._list_sessions = list_sessions if list_sessions_fn is None else list_sessions_fn
         self._get_preview = get_preview if get_preview_fn is None else get_preview_fn
+        self._get_runtime_info = (
+            get_runtime_info if get_runtime_info_fn is None else get_runtime_info_fn
+        )
         self._server: asyncio.Server | None = None
         self._handlers: set[asyncio.Task[None]] = set()
         self._writers: set[asyncio.StreamWriter] = set()
@@ -195,7 +205,7 @@ class StudioHost:
         capability = self._capability
         if capability is None:
             raise StudioHostLifecycleError
-        return f"{self.origin}/#capability={capability}"
+        return f"{self.origin}/live#capability={capability}"
 
     async def start(self) -> None:
         """Bind one OS-assigned IPv4 loopback port within the lifecycle bound."""
@@ -378,7 +388,11 @@ class StudioHost:
                 return _error_response("application_error")
             return _Response(200, static_asset[1], body)
 
-        api_route = request.target in {"/api/v1/meta", "/api/v1/sessions"}
+        api_route = request.target in {
+            "/api/v1/meta",
+            "/api/v1/runtime/info",
+            "/api/v1/sessions",
+        }
         prefix = "/api/v1/sessions/"
         suffix = "/preview"
         preview_session: str | None = None
@@ -400,6 +414,8 @@ class StudioHost:
                     "schema_version": STUDIO_SCHEMA_VERSION,
                 }
             )
+        if request.target == "/api/v1/runtime/info":
+            return await self._runtime_info_response()
         if request.target == "/api/v1/sessions":
             return await self._sessions_response()
         if preview_session is None:
@@ -461,6 +477,61 @@ class StudioHost:
             if len(encoded) > MAX_API_RESPONSE_BYTES:
                 raise _ResponseTooLarge
             return _Response(200, "application/json; charset=utf-8", encoded)
+        except StudioApplicationError as error:
+            return _application_error_response(error)
+        except Exception:
+            return _error_response("application_error")
+
+    async def _runtime_info_response(self) -> _Response:
+        try:
+            info = await self._get_runtime_info()
+            if (
+                not isinstance(cast(object, info), StudioRuntimeInfo)
+                or info.schema_version != STUDIO_SCHEMA_VERSION
+                or type(info.package_version) is not str
+                or not info.package_version.strip()
+                or type(info.supported_config_schemas) is not tuple
+                or any(
+                    type(version) is not str or not version.strip()
+                    for version in info.supported_config_schemas
+                )
+                or type(info.registered_models) is not tuple
+                or len(info.registered_models) > 64
+            ):
+                raise ValueError
+            serialized_models: list[dict[str, object]] = []
+            seen_models: set[str] = set()
+            for item in info.registered_models:
+                if (
+                    not isinstance(cast(object, item), RuntimeModelSummary)
+                    or type(item.model) is not str
+                    or not item.model.strip()
+                    or item.model in seen_models
+                    or type(item.category) is not str
+                    or not item.category.strip()
+                    or type(item.capabilities) is not tuple
+                    or any(
+                        type(cap) is not str or not cap.strip()
+                        for cap in item.capabilities
+                    )
+                ):
+                    raise ValueError
+                seen_models.add(item.model)
+                serialized_models.append(
+                    {
+                        "capabilities": list(item.capabilities),
+                        "category": item.category,
+                        "model": item.model,
+                    }
+                )
+            return _json_response(
+                {
+                    "package_version": info.package_version,
+                    "registered_models": serialized_models,
+                    "schema_version": STUDIO_SCHEMA_VERSION,
+                    "supported_config_schemas": list(info.supported_config_schemas),
+                }
+            )
         except StudioApplicationError as error:
             return _application_error_response(error)
         except Exception:

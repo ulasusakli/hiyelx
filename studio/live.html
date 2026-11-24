@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>HIYELX Studio — Live local observation</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="studio.css" />
+    <script src="host-client.js" defer></script>
+    <script src="live-app.js" defer></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="app-header">
+        <a class="brand" href="#main" aria-label="HIYELX Studio live observation home">
+          <span class="brand-mark" aria-hidden="true">H</span>
+          <span class="brand-name">HIYELX <span>Studio</span></span>
+        </a>
+        <div class="header-status">
+          <span class="simulation-badge"><span aria-hidden="true">●</span> LIVE LOCAL HOST</span>
+          <span class="connection-badge" id="connection-badge" data-severity="neutral">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span id="connection-label">Connecting</span>
+          </span>
+        </div>
+      </header>
+
+      <main id="main" class="main-content">
+        <section class="intro" aria-labelledby="page-title">
+          <div>
+            <p class="eyebrow">OBSERVATION · LOCAL · READ ONLY</p>
+            <h1 id="page-title">Live runtime overview</h1>
+            <p class="intro-copy">Connected to the local HIYELX Studio Host over 127.0.0.1. Live session data is never mixed with static fixtures.</p>
+          </div>
+          <span class="prototype-tag" id="host-version-tag">READ-ONLY LIVE</span>
+        </section>
+
+        <section class="session-panel panel" aria-labelledby="session-heading">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">SESSION</p>
+              <h2 id="session-heading">Local runtime session</h2>
+            </div>
+            <span class="state-pill" id="state-pill" data-severity="neutral">Connecting</span>
+          </div>
+          <div class="session-controls">
+            <div class="field-group">
+              <label for="session-select">Observable session</label>
+              <select id="session-select" disabled aria-describedby="session-help">
+                <option value="">Discovering local sessions…</option>
+              </select>
+              <p class="field-help" id="session-help">Discover running local sessions without starting, stopping, or mutating the runtime.</p>
+            </div>
+            <div class="refresh-info">
+              <span class="field-label">Snapshot freshness</span>
+              <span class="refresh-value" id="freshness">Waiting for host</span>
+              <button type="button" class="status-pill" id="refresh-sessions-button">Refresh sessions</button>
+            </div>
+          </div>
+          <div class="state-message" id="state-message" data-severity="neutral" role="status" aria-live="polite" aria-atomic="true">
+            <span class="message-icon" aria-hidden="true">i</span>
+            <span id="state-message-text">Connecting to the local Studio Host.</span>
+          </div>
+        </section>
+
+        <section class="runtime-grid" aria-label="Runtime summary">
+          <article class="summary-card panel">
+            <span class="field-label">Runtime state</span>
+            <strong id="runtime-state">—</strong>
+            <span class="summary-note">Live manager snapshot state</span>
+          </article>
+          <article class="summary-card panel">
+            <span class="field-label">Resources</span>
+            <strong id="resource-count">0</strong>
+            <span class="summary-note">Observable runtime resources</span>
+          </article>
+          <article class="summary-card panel">
+            <span class="field-label">Snapshot</span>
+            <strong id="snapshot-state">No snapshot</strong>
+            <span class="summary-note" id="snapshot-note">Live read-only observation</span>
+          </article>
+        </section>
+
+        <section class="resources-section" aria-labelledby="resources-heading">
+          <div class="section-heading resource-heading">
+            <div>
+              <p class="eyebrow">ORDERED LIVE RESOURCES</p>
+              <h2 id="resources-heading">Resources</h2>
+            </div>
+            <span class="field-help">Order follows the validated Runtime preview schema.</span>
+          </div>
+          <div class="resource-grid" id="resource-grid" aria-live="off" hidden></div>
+          <div class="empty-panel panel" id="empty-state">
+            <span class="empty-icon" aria-hidden="true">—</span>
+            <h3 id="empty-title">No live resource snapshot</h3>
+            <p id="empty-copy">Resource values appear once an active local Runtime session is selected and validated.</p>
+          </div>
+        </section>
+
+        <section class="resources-section" aria-labelledby="runtime-info-heading" id="runtime-info-section">
+          <div class="section-heading resource-heading">
+            <div>
+              <p class="eyebrow">INSTALLED RUNTIME PACKAGE</p>
+              <h2 id="runtime-info-heading">Runtime capabilities</h2>
+            </div>
+            <span class="field-help" id="runtime-package-summary">Discovering installed package…</span>
+          </div>
+          <div class="resource-grid" id="runtime-models-grid" aria-live="off"></div>
+        </section>
+      </main>
+
+      <footer class="app-footer">
+        <p><strong>Local only · Read only · Simulation values are not physical proof.</strong></p>
+        <p>Health describes the represented software/simulation observation only. It does not establish physical motor or sensor health, safe operation, physics fidelity, or certification.</p>
+      </footer>
+    </div>
+    <div class="viewport-fallback" role="status">
+      <span class="simulation-badge"><span aria-hidden="true">●</span> LIVE LOCAL HOST</span>
+      <h2>Wider view required</h2>
+      <p>HIYELX Studio is designed for viewports at least 320 CSS pixels wide. Increase the window width to inspect the dashboard.</p>
+    </div>
+  </body>
+</html>

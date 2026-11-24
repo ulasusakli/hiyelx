@@ -21,9 +21,12 @@ from hiyelx.simulation import (
 )
 from hiyelx.studio import application
 from hiyelx.studio.application import (
+    RuntimeModelSummary,
     StudioApplicationError,
     StudioErrorCode,
+    StudioRuntimeInfo,
     get_preview,
+    get_runtime_info,
     list_sessions,
 )
 
@@ -189,6 +192,30 @@ def test_application_surface_has_no_runtime_mutation_operation() -> None:
     assert "run_local_runtime" not in application.__dict__
     assert "reserve_session" not in application.__dict__
     assert "hardware" not in application.__dict__
+
+
+@pytest.mark.asyncio
+async def test_get_runtime_info_returns_sorted_sanitized_builtin_models() -> None:
+    info = await get_runtime_info()
+    assert isinstance(info, StudioRuntimeInfo)
+    assert info.schema_version == "1"
+    assert info.package_version == "0.2.0a1"
+    assert info.supported_config_schemas == ("1", "2")
+    model_names = tuple(item.model for item in info.registered_models)
+    assert model_names == tuple(sorted(model_names))
+    assert "mock.motor" in model_names
+    assert "mock.encoder" in model_names
+    assert "mock.imu" in model_names
+    assert "mock.camera" in model_names
+    motor = next(item for item in info.registered_models if item.model == "mock.motor")
+    assert motor == RuntimeModelSummary(
+        model="mock.motor",
+        category="actuator",
+        capabilities=("can_set_velocity", "has_angular_position", "has_angular_velocity"),
+    )
+    rendered = repr(info).lower()
+    for private in ("/users/", "/tmp/", "pid", "socket", "secret"):
+        assert private not in rendered
 
 
 def _snapshot() -> SimulationPreviewSnapshot:

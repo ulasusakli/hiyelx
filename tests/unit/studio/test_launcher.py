@@ -198,6 +198,97 @@ print(json.dumps(result, sort_keys=True))
     }
 
 
+def test_installed_wheel_serves_live_composition_and_runtime_info_without_checkout(
+    built_wheel: Path,
+    tmp_path: Path,
+) -> None:
+    installed = tmp_path / "installed-p3"
+    installed.mkdir()
+    with zipfile.ZipFile(built_wheel) as archive:
+        archive.extractall(installed)
+    script = """
+import asyncio
+import json
+import sys
+from urllib.parse import urlsplit
+
+sys.path.insert(0, sys.argv[1])
+import hiyelx
+from hiyelx.studio.host import CAPABILITY_HEADER
+from hiyelx.studio.launcher import launch_studio
+
+launched_url = []
+observed = {}
+
+async def fetch(host, port, path, capability=None):
+    reader, writer = await asyncio.open_connection(host, port)
+    lines = [f"GET {path} HTTP/1.1", f"Host: {host}:{port}"]
+    if capability is not None:
+        lines.append(f"{CAPABILITY_HEADER}: {capability}")
+    lines.append("Connection: close")
+    writer.write(("\\r\\n".join(lines) + "\\r\\n\\r\\n").encode("ascii"))
+    await writer.drain()
+    raw = await reader.read()
+    writer.close()
+    await writer.wait_closed()
+    head, _, body = raw.partition(b"\\r\\n\\r\\n")
+    status = int(head.split(b"\\r\\n", 1)[0].split(b" ")[1])
+    return status, body
+
+def open_browser(url):
+    launched_url.append(url)
+    return True
+
+async def probe_and_stop():
+    parsed = urlsplit(launched_url[0])
+    host = parsed.hostname
+    port = parsed.port
+    token = parsed.fragment.removeprefix("capability=")
+    live_status, live_body = await fetch(host, port, "/live")
+    p1_status, p1_body = await fetch(host, port, "/")
+    meta_status, meta_body = await fetch(host, port, "/api/v1/meta", token)
+    info_status, info_body = await fetch(host, port, "/api/v1/runtime/info", token)
+    unauth_status, _ = await fetch(host, port, "/api/v1/runtime/info")
+    observed["launch_path"] = parsed.path
+    observed["live_ok"] = live_status == 200 and b"fixtures.js" not in live_body
+    observed["p1_ok"] = p1_status == 200 and b"fixtures.js" in p1_body
+    observed["meta_ok"] = meta_status == 200 and json.loads(meta_body)["ready"] is True
+    info_doc = json.loads(info_body)
+    observed["info_ok"] = (
+        info_status == 200
+        and info_doc["schema_version"] == "1"
+        and info_doc["supported_config_schemas"] == ["1", "2"]
+        and any(item["model"] == "mock.motor" for item in info_doc["registered_models"])
+    )
+    observed["unauth_status"] = unauth_status
+    observed["checkout_absent"] = not str(hiyelx.__file__).startswith(sys.argv[2])
+
+asyncio.run(launch_studio(
+    browser_opener=open_browser,
+    shutdown_waiter=probe_and_stop,
+))
+print(json.dumps(observed, sort_keys=True))
+"""
+    result = subprocess.run(
+        (sys.executable, "-I", "-c", script, str(installed), str(ROOT)),
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "checkout_absent": True,
+        "info_ok": True,
+        "launch_path": "/live",
+        "live_ok": True,
+        "meta_ok": True,
+        "p1_ok": True,
+        "unauth_status": 403,
+    }
+
+
 @pytest.mark.parametrize("unexpected", ("extra.txt", "../escape"))
 @pytest.mark.asyncio
 async def test_asset_staging_rejects_non_allowlisted_entries(
