@@ -1,4 +1,5 @@
-import { Activity, AlertTriangle, Radio } from "lucide-react";
+import { useState } from "react";
+import { Activity, AlertTriangle, Link2, PlugZap, Radio } from "lucide-react";
 import type { TelemetryFrame } from "@hiyelx/telemetry";
 import { StatusBadge } from "@hiyelx/ui";
 
@@ -29,6 +30,13 @@ export function MonitorView({
   bufferCapacity,
   droppedFrames,
   missingSequenceCount,
+  connectedOrigin,
+  liveSessions,
+  selectedLiveSession,
+  connectionError,
+  onConnectLaunchUrl,
+  onSelectLiveSession,
+  onDisconnect,
   onInjectDiagnosticSample,
   onClearBuffer,
 }: {
@@ -37,9 +45,17 @@ export function MonitorView({
   readonly bufferCapacity: number;
   readonly droppedFrames: number;
   readonly missingSequenceCount: number;
+  readonly connectedOrigin: string | null;
+  readonly liveSessions: readonly string[];
+  readonly selectedLiveSession: string | null;
+  readonly connectionError: string | null;
+  readonly onConnectLaunchUrl: (launchUrl: string) => void;
+  readonly onSelectLiveSession: (session: string) => void;
+  readonly onDisconnect: () => void;
   readonly onInjectDiagnosticSample: (withFault: boolean) => void;
   readonly onClearBuffer: () => void;
 }) {
+  const [launchUrlInput, setLaunchUrlInput] = useState("");
   const latest = frames[frames.length - 1] ?? null;
   const positions = frames.map(
     (frame) => frame.resources[0]?.state.angular_position_radians ?? 0,
@@ -104,6 +120,73 @@ export function MonitorView({
             Clear Buffer
           </button>
         </div>
+      </div>
+
+      <div className="mb-4 rounded-xl border border-slate-800 bg-slate-900/50 p-3 text-xs">
+        <div className="flex flex-wrap items-center gap-2">
+          <Link2 className="h-3.5 w-3.5 text-cyan-400" aria-hidden="true" />
+          <input
+            aria-label="Local Studio Host launch URL"
+            type="password"
+            className="min-w-[260px] flex-1 rounded-md border border-slate-700 bg-slate-950 px-2.5 py-1.5 font-mono text-xs text-slate-100 placeholder:text-slate-500"
+            placeholder="http://127.0.0.1:<port>/live#capability=<token> (in-memory only)"
+            value={launchUrlInput}
+            onChange={(event) => setLaunchUrlInput(event.target.value)}
+          />
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 rounded-md bg-cyan-600 px-3 py-1.5 font-semibold text-slate-950 hover:bg-cyan-500 disabled:bg-slate-800 disabled:text-slate-500"
+            disabled={launchUrlInput.trim().length === 0}
+            onClick={() => {
+              const raw = launchUrlInput.trim();
+              setLaunchUrlInput("");
+              onConnectLaunchUrl(raw);
+            }}
+          >
+            <PlugZap className="h-3.5 w-3.5" aria-hidden="true" />
+            Connect 127.0.0.1
+          </button>
+          {connectedOrigin !== null && (
+            <button
+              type="button"
+              className="rounded-md border border-rose-800/70 bg-rose-950/50 px-2.5 py-1.5 text-rose-200 hover:bg-rose-900/50"
+              onClick={onDisconnect}
+            >
+              Disconnect
+            </button>
+          )}
+        </div>
+
+        {connectedOrigin !== null && (
+          <div className="mt-2 flex flex-wrap items-center gap-3 text-slate-300">
+            <span className="font-mono text-[11px] text-emerald-300">Host: {connectedOrigin}</span>
+            {liveSessions.length > 0 ? (
+              <label className="inline-flex items-center gap-1.5">
+                <span className="text-slate-400">Session:</span>
+                <select
+                  aria-label="Live Runtime session"
+                  className="rounded border border-slate-700 bg-slate-950 px-2 py-1 font-mono text-xs text-slate-100"
+                  value={selectedLiveSession ?? ""}
+                  onChange={(event) => onSelectLiveSession(event.target.value)}
+                >
+                  {liveSessions.map((sessionId) => (
+                    <option key={sessionId} value={sessionId}>
+                      {sessionId}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              <span className="text-slate-400">No active local sessions reported by Host.</span>
+            )}
+          </div>
+        )}
+
+        {connectionError !== null && (
+          <p role="alert" className="mt-2 font-mono text-rose-300">
+            {connectionError}
+          </p>
+        )}
       </div>
 
       <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">

@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   Activity,
@@ -10,6 +10,11 @@ import {
   Save,
   Stethoscope,
 } from "lucide-react";
+import {
+  StudioApiClient,
+  StudioApiError,
+  parseStudioLaunchUrl,
+} from "@hiyelx/api-client";
 import {
   patchRobotConfigYamlRoundTrip,
   validateRobotConfigYaml,
@@ -76,15 +81,28 @@ function StudioWorkbench() {
   );
   const [layout, setLayout] = useState<CanvasLayoutDocument>(initialBundle.layout);
 
-  // P7 bounded telemetry ring buffer + structured diagnostics log state.
+  // P7 bounded telemetry ring buffer + live 127.0.0.1 SSE connection state.
   const telemetryBufferRef = useRef(new TelemetryRingBuffer<TelemetryFrame>(120));
   const gapDetectorRef = useRef(new SequenceGapDetector());
+  const apiClientRef = useRef<StudioApiClient | null>(null);
+  const streamAbortRef = useRef<AbortController | null>(null);
   const seqRef = useRef(0);
   const [telemetryFrames, setTelemetryFrames] = useState<readonly TelemetryFrame[]>([]);
   const [diagnosticLogs, setDiagnosticLogs] = useState<readonly StructuredLogRecord[]>([]);
   const [streamStatus, setStreamStatus] = useState<StreamConnectionStatus>("disconnected");
   const [droppedFrames, setDroppedFrames] = useState(0);
   const [missingSequences, setMissingSequences] = useState(0);
+  const [connectedOrigin, setConnectedOrigin] = useState<string | null>(null);
+  const [liveSessions, setLiveSessions] = useState<readonly string[]>([]);
+  const [selectedLiveSession, setSelectedLiveSession] = useState<string | null>(null);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+
+  useEffect(() => {
+    return () => {
+      streamAbortRef.current?.abort();
+      apiClientRef.current = null;
+    };
+  }, []);
 
   // Transient UI state lives exclusively in Zustand.
   const activeView = useStudioUiStore((s) => s.activeView);
@@ -320,6 +338,101 @@ function StudioWorkbench() {
     setDiagnosticLogs((prev) => [logEntry, ...prev].slice(0, 200));
   }
 
+  function startLiveSessionStream(client: StudioApiClient, sessionId: string) {
+    streamAbortRef.current?.abort();
+    const abortController = new AbortController();
+    streamAbortRef.current = abortController;
+    telemetryBufferRef.current.clear();
+    gapDetectorRef.current.reset();
+    setTelemetryFrames([]);
+    setDroppedFrames(0);
+    setMissingSequences(0);
+    setSelectedLiveSession(sessionId);
+    setConnectionError(null);
+
+    void client.subscribeSessionStream(
+      sessionId,
+      {
+        onStatus: (nextStatus) => setStreamStatus(nextStatus),
+        onTelemetry: (frame) => {
+          telemetryBufferRef.current.push(frame);
+          gapDetectorRef.current.observe(frame.sequence_number);
+          setTelemetryFrames(telemetryBufferRef.current.toArray());
+          setDroppedFrames(telemetryBufferRef.current.droppedCount);
+          setMissingSequences(gapDetectorRef.current.missingCount);
+        },
+        onDiagnostic: (record) => {
+          setDiagnosticLogs((prev) => [record, ...prev].slice(0, 200));
+        },
+        onError: (err) => {
+          setConnectionError(`${err.code}: ${err.message}`);
+        },
+      },
+      { signal: abortController.signal },
+    );
+  }
+
+  async function handleConnectLaunchUrl(rawLaunchUrl: string) {
+    streamAbortRef.current?.abort();
+    setConnectionError(null);
+    let parsed: { readonly origin: string; readonly capability: string };
+    try {
+      parsed = parseStudioLaunchUrl(rawLaunchUrl);
+    } catch (error) {
+      setConnectionError(
+        error instanceof StudioApiError
+          ? `${error.code}: ${error.message}`
+          : "Invalid Studio Host launch URL.",
+      );
+      return;
+    }
+
+    const client = new StudioApiClient({
+      origin: parsed.origin,
+      capability: parsed.capability,
+    });
+    apiClientRef.current = client;
+    setConnectedOrigin(parsed.origin);
+    setStreamStatus("connecting");
+
+    try {
+      await client.fetchMeta();
+      const sessions = await client.fetchSessions();
+      setLiveSessions(sessions);
+      const firstSession = sessions[0];
+      if (firstSession !== undefined) {
+        startLiveSessionStream(client, firstSession);
+      } else {
+        setSelectedLiveSession(null);
+        setStreamStatus("disconnected");
+      }
+    } catch (error) {
+      setStreamStatus("disconnected");
+      setConnectionError(
+        error instanceof StudioApiError
+          ? `${error.code}: ${error.message}`
+          : "Could not reach local Studio Host.",
+      );
+    }
+  }
+
+  function handleSelectLiveSession(sessionId: string) {
+    const client = apiClientRef.current;
+    if (client === null || !sessionId) return;
+    startLiveSessionStream(client, sessionId);
+  }
+
+  function handleDisconnectLiveHost() {
+    streamAbortRef.current?.abort();
+    streamAbortRef.current = null;
+    apiClientRef.current = null;
+    setConnectedOrigin(null);
+    setLiveSessions([]);
+    setSelectedLiveSession(null);
+    setConnectionError(null);
+    setStreamStatus("disconnected");
+  }
+
   function handleClearTelemetry() {
     telemetryBufferRef.current.clear();
     gapDetectorRef.current.reset();
@@ -511,6 +624,15 @@ function StudioWorkbench() {
               bufferCapacity={telemetryBufferRef.current.capacity}
               droppedFrames={droppedFrames}
               missingSequenceCount={missingSequences}
+              connectedOrigin={connectedOrigin}
+              liveSessions={liveSessions}
+              selectedLiveSession={selectedLiveSession}
+              connectionError={connectionError}
+              onConnectLaunchUrl={(url) => {
+                void handleConnectLaunchUrl(url);
+              }}
+              onSelectLiveSession={handleSelectLiveSession}
+              onDisconnect={handleDisconnectLiveHost}
               onInjectDiagnosticSample={handleInjectDiagnosticSample}
               onClearBuffer={handleClearTelemetry}
             />

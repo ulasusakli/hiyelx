@@ -61,13 +61,50 @@ jobs:
           tests/unit/runtime/test_session_discovery.py
           tests/unit/studio/test_application.py
           tests/unit/studio/test_host.py
+          tests/unit/studio/test_telemetry_stream.py
+          tests/unit/project/test_project_engine.py
+          tests/unit/manifests/test_manifest_engine.py
           tests/unit/test_cli.py
           tests/integration/test_runtime_cli.py
           tests/integration/test_studio_host.py
           tests/studio/test_static_shell.py
           tests/studio/test_host_client.py
+          tests/studio/test_live_composition.py
           tests/studio/test_p1_preservation.py
           tests/unit/test_verify_clean_install.py
 
       - name: Clean installed wheel RTO-3 journey
         run: uv run python scripts/verify_clean_install.py
+
+  studio-app:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: studio-app
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: studio-app/pnpm-lock.yaml
+
+      - name: Install Studio dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: TypeScript strict typecheck
+        run: pnpm typecheck
+
+      - name: Studio Vitest suite
+        run: pnpm test
+
+      - name: Studio production build
+        run: pnpm build

@@ -94,4 +94,16 @@ describe("P4.3–P4.5 Studio RDE Workbench", () => {
     expect(screen.getByText("OPERATION_DEADLINE_EXCEEDED")).toBeInTheDocument();
     expect(screen.getByText("Runtime operation deadline exceeded")).toBeInTheDocument();
   });
+
+  it("rejects non-loopback launch URLs in Monitor live connection panel", () => {
+    render(<StudioApp />);
+    fireEvent.click(screen.getByRole("button", { name: "Monitor" }));
+
+    const input = screen.getByLabelText("Local Studio Host launch URL") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "http://0.0.0.0:43123/live#capability=" + "A".repeat(43) } });
+    fireEvent.click(screen.getByRole("button", { name: "Connect 127.0.0.1" }));
+
+    expect(input.value).toBe("");
+    expect(screen.getByRole("alert")).toHaveTextContent(/invalid_origin/);
+  });
 });

@@ -24,6 +24,7 @@
       "@hiyelx/graph-engine": ["packages/graph-engine/src/index.ts"],
       "@hiyelx/config-engine": ["packages/config-engine/src/index.ts"],
       "@hiyelx/telemetry": ["packages/telemetry/src/index.ts"],
+      "@hiyelx/api-client": ["packages/api-client/src/index.ts"],
       "@hiyelx/code-editor": ["packages/code-editor/src/index.ts"],
       "@hiyelx/ui": ["packages/ui/src/index.ts"]
     }
