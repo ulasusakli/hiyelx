@@ -1,5 +1,15 @@
 """HIYELX Studio Project Model Engine (schema v1 + general robot graph)."""
 
+from hiyelx.project.applications import (
+    SUPPORTED_WORKFLOW_SCHEMA_VERSION,
+    ApplicationMetadata,
+    ApplicationWorkflowDocument,
+    WorkflowFaultPolicy,
+    WorkflowTask,
+    load_workflow_from_str,
+    serialize_workflow_yaml,
+    validate_workflow_against_robot,
+)
 from hiyelx.project.errors import (
     GraphDependencyCycleError,
     ProjectError,
@@ -46,6 +56,9 @@ __all__ = [
     "SUPPORTED_GRAPH_SCHEMA_VERSION",
     "SUPPORTED_LAYOUT_SCHEMA_VERSION",
     "SUPPORTED_PROJECT_SCHEMA_VERSION",
+    "SUPPORTED_WORKFLOW_SCHEMA_VERSION",
+    "ApplicationMetadata",
+    "ApplicationWorkflowDocument",
     "CanvasLayoutDocument",
     "GraphDependencyCycleError",
     "GraphEdge",
@@ -65,6 +78,8 @@ __all__ = [
     "StudioEdgeKind",
     "StudioNodeKind",
     "UnsupportedProjectSchemaVersionError",
+    "WorkflowFaultPolicy",
+    "WorkflowTask",
     "WorkspacePaths",
     "atomic_write_text",
     "create_studio_project",
@@ -72,7 +87,10 @@ __all__ = [
     "load_project_manifest",
     "load_robot_graph",
     "load_studio_project",
+    "load_workflow_from_str",
     "resolve_workspace_path",
     "serialize_project_manifest_yaml",
     "serialize_robot_config_yaml",
+    "serialize_workflow_yaml",
+    "validate_workflow_against_robot",
 ]

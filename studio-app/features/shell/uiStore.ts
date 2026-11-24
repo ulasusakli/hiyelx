@@ -3,9 +3,12 @@ import type { StudioEdgeKind } from "@hiyelx/graph-engine";
 
 export type StudioViewId =
   | "builder"
+  | "data-flow"
   | "explorer"
   | "config"
   | "diff"
+  | "applications"
+  | "dev-env"
   | "monitor"
   | "diagnostics";
 

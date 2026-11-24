@@ -16,6 +16,7 @@ export default defineConfig({
       "@hiyelx/config-engine": path.resolve(rootDir, "packages/config-engine/src/index.ts"),
       "@hiyelx/telemetry": path.resolve(rootDir, "packages/telemetry/src/index.ts"),
       "@hiyelx/api-client": path.resolve(rootDir, "packages/api-client/src/index.ts"),
+      "@hiyelx/workflow-engine": path.resolve(rootDir, "packages/workflow-engine/src/index.ts"),
       "@hiyelx/code-editor": path.resolve(rootDir, "packages/code-editor/src/index.ts"),
       "@hiyelx/ui": path.resolve(rootDir, "packages/ui/src/index.ts"),
     },

@@ -7,8 +7,11 @@ import {
   GitCompare,
   Network,
   Package,
+  PlaySquare,
   Save,
   Stethoscope,
+  Terminal,
+  Waves,
 } from "lucide-react";
 import {
   StudioApiClient,
@@ -25,6 +28,7 @@ import {
   computeAutoLayout,
   parseRobotGraphYaml,
   projectDependsOn,
+  serializeRobotGraphYaml,
   validateDependencyDag,
   type RobotGraphDocument,
   type StudioEdgeKind,
@@ -36,6 +40,7 @@ import {
 } from "@hiyelx/manifest-engine";
 import {
   createStarterProjectSnapshot,
+  serializeProjectManifestYaml,
   type CanvasLayoutDocument,
   type ProjectManifest,
   type StarterTemplate,
@@ -47,9 +52,17 @@ import {
   type StructuredLogRecord,
   type TelemetryFrame,
 } from "@hiyelx/telemetry";
+import {
+  createStarterWorkflow,
+  serializeApplicationWorkflowYaml,
+  type ApplicationWorkflowDocument,
+} from "@hiyelx/workflow-engine";
 import { StatusBadge } from "@hiyelx/ui";
+import { ApplicationStudioView } from "../../../../features/applications/ApplicationStudioView.tsx";
 import { ConfigEditorView } from "../../../../features/configuration/ConfigEditorView.tsx";
 import { DiffPanel } from "../../../../features/configuration/DiffPanel.tsx";
+import { DataFlowView } from "../../../../features/data-flow/DataFlowView.tsx";
+import { DevEnvView } from "../../../../features/dev-env/DevEnvView.tsx";
 import { DiagnosticsView } from "../../../../features/diagnostics/DiagnosticsView.tsx";
 import { ComponentExplorerView } from "../../../../features/explorer/ComponentExplorerView.tsx";
 import { MonitorView, type StreamConnectionStatus } from "../../../../features/monitor/MonitorView.tsx";
@@ -80,6 +93,10 @@ function StudioWorkbench() {
     parseRobotGraphYaml(initialBundle.graphYaml),
   );
   const [layout, setLayout] = useState<CanvasLayoutDocument>(initialBundle.layout);
+  const [workflow, setWorkflow] = useState<ApplicationWorkflowDocument>(() => {
+    const parsed = validateRobotConfigYaml(initialBundle.robotYaml);
+    return createStarterWorkflow(parsed.ok ? parsed.config : null);
+  });
 
   // P7 bounded telemetry ring buffer + live 127.0.0.1 SSE connection state.
   const telemetryBufferRef = useRef(new TelemetryRingBuffer<TelemetryFrame>(120));
@@ -132,6 +149,8 @@ function StudioWorkbench() {
     setWorkingRobotYaml(next.robotYaml);
     setGraph(parseRobotGraphYaml(next.graphYaml));
     setLayout(next.layout);
+    const parsed = validateRobotConfigYaml(next.robotYaml);
+    setWorkflow(createStarterWorkflow(parsed.ok ? parsed.config : null));
     setSelectedNodeId(null);
     setActiveProfile(next.manifest.workspace.default_profile);
   }
@@ -433,6 +452,26 @@ function StudioWorkbench() {
     setStreamStatus("disconnected");
   }
 
+  function handleAddFlowEdge(
+    source: string,
+    target: string,
+    kind: "data" | "command" | "feedback",
+    topic: string,
+  ) {
+    const edgeId = `${kind}-${source}-${target}-${graph.edges.length + 1}`;
+    setGraph({
+      ...graph,
+      edges: [...graph.edges, { id: edgeId, source, target, kind, topic }],
+    });
+  }
+
+  function handleRemoveFlowEdge(edgeId: string) {
+    setGraph({
+      ...graph,
+      edges: graph.edges.filter((edge) => edge.id !== edgeId),
+    });
+  }
+
   function handleClearTelemetry() {
     telemetryBufferRef.current.clear();
     gapDetectorRef.current.reset();
@@ -451,10 +490,28 @@ function StudioWorkbench() {
       onRun: () => setActiveView("builder"),
     },
     {
+      id: "view-data-flow",
+      label: "Switch to Connection & Data Flow Designer (M06)",
+      group: "Navigation",
+      onRun: () => setActiveView("data-flow"),
+    },
+    {
       id: "view-explorer",
       label: "Switch to Component & Driver Explorer (M04)",
       group: "Navigation",
       onRun: () => setActiveView("explorer"),
+    },
+    {
+      id: "view-applications",
+      label: "Switch to Application Studio (M07)",
+      group: "Development",
+      onRun: () => setActiveView("applications"),
+    },
+    {
+      id: "view-dev-env",
+      label: "Switch to Developer Environment (M08)",
+      group: "Development",
+      onRun: () => setActiveView("dev-env"),
     },
     {
       id: "view-config",
@@ -504,9 +561,12 @@ function StudioWorkbench() {
 
   const navItems: readonly { id: StudioViewId; label: string; icon: typeof Network }[] = [
     { id: "builder", label: "Robot Builder", icon: Network },
+    { id: "data-flow", label: "Data Flow", icon: Waves },
     { id: "explorer", label: "Components", icon: Package },
     { id: "config", label: "Config & YAML", icon: Code2 },
     { id: "diff", label: "Diff", icon: GitCompare },
+    { id: "applications", label: "Applications", icon: PlaySquare },
+    { id: "dev-env", label: "DevEnv", icon: Terminal },
     { id: "monitor", label: "Monitor", icon: Activity },
     { id: "diagnostics", label: "Diagnostics", icon: Stethoscope },
   ];
@@ -594,6 +654,16 @@ function StudioWorkbench() {
             />
           )}
 
+          {activeView === "data-flow" && (
+            <DataFlowView
+              graph={graph}
+              liveSamplingHz={telemetryFrames[telemetryFrames.length - 1]?.sampling_rate_hz ?? null}
+              latestSequence={telemetryFrames[telemetryFrames.length - 1]?.sequence_number ?? null}
+              onAddFlowEdge={handleAddFlowEdge}
+              onRemoveFlowEdge={handleRemoveFlowEdge}
+            />
+          )}
+
           {activeView === "explorer" && (
             <ComponentExplorerView
               catalog={BUILTIN_MANIFEST_CATALOG}
@@ -615,6 +685,42 @@ function StudioWorkbench() {
 
           {activeView === "diff" && (
             <DiffPanel savedYaml={savedRobotYaml} workingYaml={workingRobotYaml} />
+          )}
+
+          {activeView === "applications" && (
+            <ApplicationStudioView
+              workflow={workflow}
+              robotConfig={validation.ok ? validation.config : null}
+              onChangeWorkflow={setWorkflow}
+            />
+          )}
+
+          {activeView === "dev-env" && (
+            <DevEnvView
+              files={[
+                {
+                  path: "robot/robot.yaml",
+                  content: workingRobotYaml,
+                  readOnly: false,
+                  onChange: setWorkingRobotYaml,
+                },
+                {
+                  path: "applications/main.yaml",
+                  content: serializeApplicationWorkflowYaml(workflow),
+                  readOnly: true,
+                },
+                {
+                  path: "hiyelx.project.yaml",
+                  content: serializeProjectManifestYaml(manifest),
+                  readOnly: true,
+                },
+                {
+                  path: "robot/connections/graph.yaml",
+                  content: serializeRobotGraphYaml(graph),
+                  readOnly: true,
+                },
+              ]}
+            />
           )}
 
           {activeView === "monitor" && (

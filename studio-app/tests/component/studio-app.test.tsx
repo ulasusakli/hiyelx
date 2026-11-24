@@ -106,4 +106,33 @@ describe("P4.3–P4.5 Studio RDE Workbench", () => {
     expect(input.value).toBe("");
     expect(screen.getByRole("alert")).toHaveTextContent(/invalid_origin/);
   });
+
+  it("manages Data Flow (M06), Application Studio (M07), and opt-in Terminal in DevEnv (M08)", () => {
+    render(<StudioApp />);
+
+    // M06 Data Flow Designer
+    fireEvent.click(screen.getByRole("button", { name: "Data Flow" }));
+    expect(screen.getByLabelText("Connection and Data Flow Designer")).toBeInTheDocument();
+    expect(screen.getByText(/Closed-loop feedback active/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Add Channel" }));
+    expect(screen.getByText("robot/topic")).toBeInTheDocument();
+
+    // M07 Application Studio
+    fireEvent.click(screen.getByRole("button", { name: "Applications" }));
+    expect(screen.getByLabelText("Application Studio")).toBeInTheDocument();
+    expect(screen.getByText("Workflow valid")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Add Workflow Task" }));
+    expect(screen.getByLabelText("applications/main.yaml preview")).toHaveTextContent("task_4");
+
+    // M08 Developer Environment & Policy-Gated Terminal
+    fireEvent.click(screen.getByRole("button", { name: "DevEnv" }));
+    expect(screen.getByLabelText("Developer Environment")).toBeInTheDocument();
+    expect(screen.getByText("Terminal locked (opt-in required)")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Start User-Approved Terminal Session" }));
+    expect(screen.getByText("User-approved session active")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Validate Robot Config" }));
+    expect(screen.getByLabelText("Developer terminal output")).toHaveTextContent(
+      "uv run hiyelx validate-config robot/robot.yaml",
+    );
+  });
 });
