@@ -14,6 +14,7 @@ export default defineConfig({
       "@hiyelx/manifest-engine": path.resolve(rootDir, "packages/manifest-engine/src/index.ts"),
       "@hiyelx/graph-engine": path.resolve(rootDir, "packages/graph-engine/src/index.ts"),
       "@hiyelx/config-engine": path.resolve(rootDir, "packages/config-engine/src/index.ts"),
+      "@hiyelx/telemetry": path.resolve(rootDir, "packages/telemetry/src/index.ts"),
       "@hiyelx/code-editor": path.resolve(rootDir, "packages/code-editor/src/index.ts"),
       "@hiyelx/ui": path.resolve(rootDir, "packages/ui/src/index.ts"),
     },

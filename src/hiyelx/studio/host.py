@@ -25,6 +25,13 @@ from hiyelx.studio.application import (
     get_runtime_info,
     list_sessions,
 )
+from hiyelx.studio.telemetry import (
+    DEFAULT_TELEMETRY_BUFFER_LIMIT,
+    StructuredLogRecord,
+    build_telemetry_frame,
+    classify_fault,
+    format_sse_event,
+)
 
 HOST_VERSION = "1"
 STUDIO_SCHEMA_VERSION = "1"
@@ -172,6 +179,8 @@ class StudioHost:
         list_sessions_fn: SessionLister | None = None,
         get_preview_fn: PreviewReader | None = None,
         get_runtime_info_fn: RuntimeInfoReader | None = None,
+        stream_interval_seconds: float = 0.5,
+        max_stream_events: int | None = None,
     ) -> None:
         self._asset_root = _validate_asset_root(asset_root)
         self._list_sessions = list_sessions if list_sessions_fn is None else list_sessions_fn
@@ -179,6 +188,8 @@ class StudioHost:
         self._get_runtime_info = (
             get_runtime_info if get_runtime_info_fn is None else get_runtime_info_fn
         )
+        self._stream_interval_seconds = max(0.01, stream_interval_seconds)
+        self._max_stream_events = max_stream_events
         self._server: asyncio.Server | None = None
         self._handlers: set[asyncio.Task[None]] = set()
         self._writers: set[asyncio.StreamWriter] = set()
@@ -341,6 +352,10 @@ class StudioHost:
             except (TimeoutError, _RequestInvalid):
                 response = _error_response("invalid_request")
             else:
+                stream_session = self._match_stream_route(request)
+                if stream_session is not None and request.method == "GET":
+                    await self._handle_sse_stream(writer, request, stream_session)
+                    return
                 try:
                     async with asyncio.timeout(APPLICATION_TIMEOUT_SECONDS):
                         response = await self._response_for(request)
@@ -395,12 +410,19 @@ class StudioHost:
         }
         prefix = "/api/v1/sessions/"
         suffix = "/preview"
+        stream_suffix = "/stream"
         preview_session: str | None = None
+        stream_session: str | None = None
         if request.target.startswith(prefix) and request.target.endswith(suffix):
             candidate = request.target[len(prefix) : -len(suffix)]
             if candidate and "/" not in candidate:
                 api_route = True
                 preview_session = candidate
+        elif request.target.startswith(prefix) and request.target.endswith(stream_suffix):
+            candidate = request.target[len(prefix) : -len(stream_suffix)]
+            if candidate and "/" not in candidate:
+                api_route = True
+                stream_session = candidate
         if not api_route:
             return _error_response("not_found")
         if not self._valid_capability(request.headers):
@@ -418,11 +440,148 @@ class StudioHost:
             return await self._runtime_info_response()
         if request.target == "/api/v1/sessions":
             return await self._sessions_response()
+        if stream_session is not None:
+            if _SESSION_PATTERN.fullmatch(stream_session) is None:
+                return _error_response("invalid_request")
+            return await self._stream_head_response(stream_session)
         if preview_session is None:
             return _error_response("not_found")
         if _SESSION_PATTERN.fullmatch(preview_session) is None:
             return _error_response("invalid_request")
         return await self._preview_response(preview_session)
+
+    def _match_stream_route(self, request: _Request) -> str | None:
+        prefix = "/api/v1/sessions/"
+        suffix = "/stream"
+        if not (request.target.startswith(prefix) and request.target.endswith(suffix)):
+            return None
+        candidate = request.target[len(prefix) : -len(suffix)]
+        if not candidate or "/" in candidate or "?" in request.target or "#" in request.target:
+            return None
+        return candidate
+
+    async def _stream_head_response(self, session: str) -> _Response:
+        try:
+            snapshot = await self._get_preview(session)
+            if not isinstance(cast(object, snapshot), SimulationPreviewSnapshot):
+                raise ValueError
+            return _Response(200, "text/event-stream; charset=utf-8", b"")
+        except StudioApplicationError as error:
+            return _application_error_response(error)
+        except Exception:
+            return _error_response("application_error")
+
+    async def _handle_sse_stream(
+        self,
+        writer: asyncio.StreamWriter,
+        request: _Request,
+        session: str,
+    ) -> None:
+        host_failure = self._validate_host(request.headers)
+        if host_failure is not None:
+            await _write_response(writer, host_failure, suppress_body=False)
+            return
+        origin_failure = self._validate_origin(request.headers)
+        if origin_failure is not None:
+            await _write_response(writer, origin_failure, suppress_body=False)
+            return
+        if not self._valid_capability(request.headers):
+            await _write_response(writer, _error_response("request_rejected"), suppress_body=False)
+            return
+        if _SESSION_PATTERN.fullmatch(session) is None:
+            await _write_response(writer, _error_response("invalid_request"), suppress_body=False)
+            return
+
+        try:
+            async with asyncio.timeout(APPLICATION_TIMEOUT_SECONDS):
+                first_snapshot = await self._get_preview(session)
+            if not isinstance(cast(object, first_snapshot), SimulationPreviewSnapshot):
+                raise ValueError
+        except StudioApplicationError as error:
+            await _write_response(writer, _application_error_response(error), suppress_body=False)
+            return
+        except Exception:
+            await _write_response(writer, _error_response("application_error"), suppress_body=False)
+            return
+
+        header_lines = [
+            "HTTP/1.1 200 OK",
+            "Content-Type: text/event-stream; charset=utf-8",
+            "Connection: close",
+            *(f"{name}: {value}" for name, value in _SECURITY_HEADERS),
+        ]
+        writer.write(("\r\n".join(header_lines) + "\r\n\r\n").encode("ascii"))
+        await writer.drain()
+
+        sampling_hz = round(1.0 / self._stream_interval_seconds, 2)
+        sequence = 0
+        current_snapshot: SimulationPreviewSnapshot | None = first_snapshot
+
+        while not self._closing:
+            if current_snapshot is not None:
+                sequence += 1
+                frame = build_telemetry_frame(
+                    session=session,
+                    snapshot=current_snapshot,
+                    sequence_number=sequence,
+                    sampling_rate_hz=sampling_hz,
+                    buffer_limit=DEFAULT_TELEMETRY_BUFFER_LIMIT,
+                )
+                writer.write(format_sse_event("telemetry", sequence, frame.to_document()))
+                for resource in current_snapshot.resources:
+                    if resource.health_summary:
+                        diagnosis = classify_fault(resource.health_summary)
+                        log_record = StructuredLogRecord(
+                            schema_version=STUDIO_SCHEMA_VERSION,
+                            sequence_number=sequence,
+                            timestamp_utc=frame.timestamp_utc,
+                            level="ERROR" if diagnosis.severity == "error" else "WARNING",
+                            source=resource.identity.value,
+                            correlation_id=frame.correlation_id,
+                            fault_code=diagnosis.fault_code,
+                            message=resource.health_summary,
+                        )
+                        writer.write(
+                            format_sse_event("diagnostic", sequence, log_record.to_document())
+                        )
+                await writer.drain()
+                if self._max_stream_events is not None and sequence >= self._max_stream_events:
+                    return
+
+            await asyncio.sleep(self._stream_interval_seconds)
+            if self._closing:
+                return
+            try:
+                async with asyncio.timeout(APPLICATION_TIMEOUT_SECONDS):
+                    next_snapshot = await self._get_preview(session)
+                if not isinstance(cast(object, next_snapshot), SimulationPreviewSnapshot):
+                    raise ValueError
+                current_snapshot = next_snapshot
+            except StudioApplicationError as error:
+                sequence += 1
+                diagnosis = classify_fault(error.code.value)
+                log_record = StructuredLogRecord(
+                    schema_version=STUDIO_SCHEMA_VERSION,
+                    sequence_number=sequence,
+                    timestamp_utc=build_telemetry_frame(
+                        session=session,
+                        snapshot=first_snapshot,
+                        sequence_number=sequence,
+                        sampling_rate_hz=sampling_hz,
+                    ).timestamp_utc,
+                    level="ERROR" if diagnosis.severity == "error" else "WARNING",
+                    source="runtime.stream",
+                    correlation_id=f"{session}-seq-{sequence}",
+                    fault_code=diagnosis.fault_code,
+                    message=str(error),
+                )
+                writer.write(format_sse_event("diagnostic", sequence, log_record.to_document()))
+                await writer.drain()
+                if error.code is StudioErrorCode.SESSION_NOT_RUNNING:
+                    return
+                current_snapshot = None
+            except Exception:
+                return
 
     def _validate_host(self, headers: Mapping[str, tuple[str, ...]]) -> _Response | None:
         if "forwarded" in headers or any(name.startswith("x-forwarded-") for name in headers):

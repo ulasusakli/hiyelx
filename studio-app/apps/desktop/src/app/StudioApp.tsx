@@ -1,6 +1,15 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { Code2, Command, GitCompare, Network, Package, Save } from "lucide-react";
+import {
+  Activity,
+  Code2,
+  Command,
+  GitCompare,
+  Network,
+  Package,
+  Save,
+  Stethoscope,
+} from "lucide-react";
 import {
   patchRobotConfigYamlRoundTrip,
   validateRobotConfigYaml,
@@ -26,10 +35,19 @@ import {
   type ProjectManifest,
   type StarterTemplate,
 } from "@hiyelx/project-engine";
+import {
+  SequenceGapDetector,
+  TelemetryRingBuffer,
+  classifyFault,
+  type StructuredLogRecord,
+  type TelemetryFrame,
+} from "@hiyelx/telemetry";
 import { StatusBadge } from "@hiyelx/ui";
 import { ConfigEditorView } from "../../../../features/configuration/ConfigEditorView.tsx";
 import { DiffPanel } from "../../../../features/configuration/DiffPanel.tsx";
+import { DiagnosticsView } from "../../../../features/diagnostics/DiagnosticsView.tsx";
 import { ComponentExplorerView } from "../../../../features/explorer/ComponentExplorerView.tsx";
+import { MonitorView, type StreamConnectionStatus } from "../../../../features/monitor/MonitorView.tsx";
 import { ProjectSidebar } from "../../../../features/projects/ProjectSidebar.tsx";
 import { RobotBuilderCanvas } from "../../../../features/robot-builder/RobotBuilderCanvas.tsx";
 import { CommandPalette, type PaletteCommand } from "../../../../features/shell/CommandPalette.tsx";
@@ -57,6 +75,16 @@ function StudioWorkbench() {
     parseRobotGraphYaml(initialBundle.graphYaml),
   );
   const [layout, setLayout] = useState<CanvasLayoutDocument>(initialBundle.layout);
+
+  // P7 bounded telemetry ring buffer + structured diagnostics log state.
+  const telemetryBufferRef = useRef(new TelemetryRingBuffer<TelemetryFrame>(120));
+  const gapDetectorRef = useRef(new SequenceGapDetector());
+  const seqRef = useRef(0);
+  const [telemetryFrames, setTelemetryFrames] = useState<readonly TelemetryFrame[]>([]);
+  const [diagnosticLogs, setDiagnosticLogs] = useState<readonly StructuredLogRecord[]>([]);
+  const [streamStatus, setStreamStatus] = useState<StreamConnectionStatus>("disconnected");
+  const [droppedFrames, setDroppedFrames] = useState(0);
+  const [missingSequences, setMissingSequences] = useState(0);
 
   // Transient UI state lives exclusively in Zustand.
   const activeView = useStudioUiStore((s) => s.activeView);
@@ -238,6 +266,70 @@ function StudioWorkbench() {
     setSavedRobotYaml(workingRobotYaml);
   }
 
+  function handleInjectDiagnosticSample(withFault: boolean) {
+    seqRef.current += 1;
+    const seq = seqRef.current;
+    const corrId = `${manifest.project.id}-seq-${seq}`;
+    const timestampUtc = new Date().toISOString();
+    const healthSummary = withFault ? "deadline exceeded during motor command" : null;
+    const frame: TelemetryFrame = {
+      schema_version: "1",
+      session: manifest.project.id,
+      sequence_number: seq,
+      timestamp_monotonic_ms: seq * 500,
+      timestamp_utc: timestampUtc,
+      sampling_rate_hz: 2.0,
+      buffer_limit: telemetryBufferRef.current.capacity,
+      dropped_frames: telemetryBufferRef.current.droppedCount,
+      correlation_id: corrId,
+      runtime_state: "running",
+      resources: [
+        {
+          identity: "drive_motor",
+          kind: "motor",
+          lifecycle_state: "running",
+          health_status: withFault ? "degraded" : "healthy",
+          health_summary: healthSummary,
+          state: {
+            angular_position_radians: Number((seq * 0.35).toFixed(3)),
+            angular_velocity_radians_per_second: withFault ? 0.0 : 0.7,
+            simulation_time_seconds: seq * 0.5,
+            revision: seq,
+          },
+        },
+      ],
+    };
+    telemetryBufferRef.current.push(frame);
+    gapDetectorRef.current.observe(seq);
+    setTelemetryFrames(telemetryBufferRef.current.toArray());
+    setDroppedFrames(telemetryBufferRef.current.droppedCount);
+    setMissingSequences(gapDetectorRef.current.missingCount);
+    setStreamStatus(withFault ? "stale" : "live");
+
+    const diagnosis = healthSummary ? classifyFault(healthSummary) : null;
+    const logEntry: StructuredLogRecord = {
+      schema_version: "1",
+      sequence_number: seq,
+      timestamp_utc: timestampUtc,
+      level: withFault ? "ERROR" : "INFO",
+      source: "drive_motor",
+      correlation_id: corrId,
+      fault_code: diagnosis?.faultCode ?? null,
+      message: healthSummary ?? `Telemetry sample #${seq} validated cleanly.`,
+    };
+    setDiagnosticLogs((prev) => [logEntry, ...prev].slice(0, 200));
+  }
+
+  function handleClearTelemetry() {
+    telemetryBufferRef.current.clear();
+    gapDetectorRef.current.reset();
+    seqRef.current = 0;
+    setTelemetryFrames([]);
+    setDroppedFrames(0);
+    setMissingSequences(0);
+    setStreamStatus("disconnected");
+  }
+
   const commands: readonly PaletteCommand[] = [
     {
       id: "view-builder",
@@ -262,6 +354,18 @@ function StudioWorkbench() {
       label: "Inspect Configuration Diff",
       group: "Navigation",
       onRun: () => setActiveView("diff"),
+    },
+    {
+      id: "view-monitor",
+      label: "Switch to Live Telemetry Monitor (M10)",
+      group: "Runtime Operations",
+      onRun: () => setActiveView("monitor"),
+    },
+    {
+      id: "view-diagnostics",
+      label: "Switch to Diagnostics & Fault Explorer (M11)",
+      group: "Runtime Operations",
+      onRun: () => setActiveView("diagnostics"),
     },
     {
       id: "auto-layout",
@@ -290,6 +394,8 @@ function StudioWorkbench() {
     { id: "explorer", label: "Components", icon: Package },
     { id: "config", label: "Config & YAML", icon: Code2 },
     { id: "diff", label: "Diff", icon: GitCompare },
+    { id: "monitor", label: "Monitor", icon: Activity },
+    { id: "diagnostics", label: "Diagnostics", icon: Stethoscope },
   ];
 
   return (
@@ -397,6 +503,20 @@ function StudioWorkbench() {
           {activeView === "diff" && (
             <DiffPanel savedYaml={savedRobotYaml} workingYaml={workingRobotYaml} />
           )}
+
+          {activeView === "monitor" && (
+            <MonitorView
+              status={streamStatus}
+              frames={telemetryFrames}
+              bufferCapacity={telemetryBufferRef.current.capacity}
+              droppedFrames={droppedFrames}
+              missingSequenceCount={missingSequences}
+              onInjectDiagnosticSample={handleInjectDiagnosticSample}
+              onClearBuffer={handleClearTelemetry}
+            />
+          )}
+
+          {activeView === "diagnostics" && <DiagnosticsView logs={diagnosticLogs} />}
         </main>
       </div>
 

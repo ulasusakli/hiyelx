@@ -79,4 +79,19 @@ describe("P4.3–P4.5 Studio RDE Workbench", () => {
     const editor = screen.getByLabelText("robot.yaml editor") as HTMLTextAreaElement;
     expect(editor.value).toContain("mock_camera_1");
   });
+
+  it("streams telemetry samples into Monitor (M10) and correlates fault cards in Diagnostics (M11)", () => {
+    render(<StudioApp />);
+    fireEvent.click(screen.getByRole("button", { name: "Monitor" }));
+    expect(screen.getByLabelText("Live Telemetry Monitor")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Sample Frame (Test)" }));
+    fireEvent.click(screen.getByRole("button", { name: "Simulate Deadline Fault" }));
+    expect(screen.getByText("2 / 120")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Diagnostics" }));
+    expect(screen.getByLabelText("Diagnostics and Debugging")).toBeInTheDocument();
+    expect(screen.getByText("OPERATION_DEADLINE_EXCEEDED")).toBeInTheDocument();
+    expect(screen.getByText("Runtime operation deadline exceeded")).toBeInTheDocument();
+  });
 });
